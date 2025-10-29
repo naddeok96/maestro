@@ -25,31 +25,50 @@ class PPOConfig:
 
 
 class TeacherPolicy(nn.Module):
-    def __init__(self, descriptor_dim: int, context_dim: int, eta_bounds: tuple[float, float]):
+    """Policy network that operates on grouped MAESTRO observations.
+
+    The network mirrors the specification from the paper: per-dataset descriptors
+    are encoded with a DeepSets encoder, mean pooled to obtain a permutation
+    invariant summary, and combined with the global model/progress features to
+    form the context consumed by the shared policy heads.
+    """
+
+    def __init__(
+        self,
+        descriptor_dim: int,
+        g_model_dim: int,
+        g_progress_dim: int,
+        eta_bounds: tuple[float, float],
+        phi_dim: int = 64,
+        rho_dim: int = 64,
+    ) -> None:
         super().__init__()
-        self.encoder = DeepSetsEncoder(input_dim=descriptor_dim, phi_dim=64, rho_dim=64)
+        self.encoder = DeepSetsEncoder(input_dim=descriptor_dim, phi_dim=phi_dim, rho_dim=rho_dim)
+        context_dim = rho_dim + descriptor_dim + g_model_dim + g_progress_dim
         self.policy_heads = PolicyHeads(
-            descriptor_dim=64 + context_dim,
-            context_dim=64 + context_dim,
+            descriptor_dim=phi_dim,
+            context_dim=context_dim,
             eta_bounds=eta_bounds,
         )
         self.value_head = nn.Sequential(
-            nn.Linear(64 + context_dim, 128),
+            nn.Linear(context_dim, 128),
             nn.ReLU(),
             nn.Linear(128, 1),
         )
 
     def forward(self, observation: Dict[str, np.ndarray], descriptors: np.ndarray):
-        g_data = torch.from_numpy(observation["g_data"]).float()
-        g_model = torch.from_numpy(observation["g_model"]).float()
-        g_progress = torch.from_numpy(observation["g_progress"]).float()
-        context = torch.cat([g_data, g_model, g_progress], dim=0)
-        descriptors_tensor = torch.from_numpy(descriptors).float()
+        g_data = torch.as_tensor(observation["g_data"], dtype=torch.float32)
+        g_model = torch.as_tensor(observation["g_model"], dtype=torch.float32)
+        g_progress = torch.as_tensor(observation["g_progress"], dtype=torch.float32)
+        descriptors_tensor = torch.as_tensor(descriptors, dtype=torch.float32)
+
         summary, encoded = self.encoder(descriptors_tensor)
-        repeated_context = torch.cat([summary, context], dim=0)
-        expanded = torch.cat([encoded, context.expand(encoded.size(0), -1)], dim=-1)
-        mixture, eta, usage = self.policy_heads(expanded, repeated_context)
-        value = self.value_head(repeated_context)
+
+        # Build the global context: DeepSets summary + grouped observation blocks.
+        context = torch.cat([summary, g_data, g_model, g_progress], dim=0)
+
+        mixture, eta, usage = self.policy_heads(encoded, context)
+        value = self.value_head(context)
         return mixture, eta, usage, value
 
     def act(self, observation: Dict[str, np.ndarray], descriptors: np.ndarray):

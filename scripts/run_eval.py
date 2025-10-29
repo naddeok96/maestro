@@ -47,8 +47,12 @@ def main() -> None:
 
     config = load_config(args.config)
     env = build_env_from_tasks(config, config.get("eval_tasks", config["tasks"]))
-    context_dim = 8 + 6 + 11
-    policy = TeacherPolicy(descriptor_dim=8, context_dim=context_dim, eta_bounds=(config["optimizer"]["eta_min"], config["optimizer"]["eta_max"]))
+    policy = TeacherPolicy(
+        descriptor_dim=8,
+        g_model_dim=6,
+        g_progress_dim=11,
+        eta_bounds=(config["optimizer"]["eta_min"], config["optimizer"]["eta_max"]),
+    )
 
     obs, _ = env.reset()
     descriptors = env.last_per_dataset_descriptors
