@@ -1,0 +1,31 @@
+seed: 7
+horizon: 20
+batch_size: 32
+initial_budget: 2048
+probe:
+  size: 128
+  grad_project_dim: 4096
+  grad_ema_beta: 0.9
+  grad_norm_alpha: 0.9
+ppo:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_ratio: 0.2
+  learning_rate: 3.0e-4
+  minibatch_size: 512
+  rollout_length: 1024
+  epochs: 4
+  entropy_coef_mix: 0.01
+  entropy_coef_u: 0.001
+  barrier_kappa: 1.0e-3
+  barrier_kappa_prime: 1.0e-3
+  value_coef: 0.5
+optimizer:
+  weight_decay: 1.0e-4
+  momentum: 0.9
+  eta_min: 1.0e-5
+  eta_max: 1.0e-2
+logging:
+  output_dir: outputs/debug_run
+  tensorboard: false
+  csv_interval: 1

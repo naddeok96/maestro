@@ -1,140 +1,83 @@
-"""Lightweight PPO implementation with DeepSets style heads."""
+"""Minimal PPO implementation for MAESTRO."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterable, Tuple
+from typing import Dict, List
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from torch import nn
+from torch.optim import Adam
 
+from maestro.envs.maestro_env import MaestroEnv
 
-class DeepSetEncoder(nn.Module):
-    """Permutation invariant encoder using DeepSets pooling."""
-
-    def __init__(self, input_dim: int, hidden_dim: int = 64):
-        super().__init__()
-        self.phi = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-        )
-        self.rho = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (batch, set_size, feat)
-        phi_x = self.phi(x)
-        pooled = phi_x.mean(dim=1)
-        return self.rho(pooled)
-
-
-class ActorCritic(nn.Module):
-    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int = 64):
-        super().__init__()
-        set_size = action_dim
-        feature_dim = observation_dim // set_size
-        self.encoder = DeepSetEncoder(feature_dim)
-        self.policy_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, action_dim),
-        )
-        self.value_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, 1),
-        )
-
-    def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch, dim = obs.shape
-        # reshape into set representation
-        set_size = self.policy_head[-1].out_features
-        feature_dim = dim // set_size
-        set_obs = obs.view(batch, set_size, feature_dim)
-        latent = self.encoder(set_obs)
-        logits = self.policy_head(latent)
-        values = self.value_head(latent).squeeze(-1)
-        return logits, values
+from .deepsets import DeepSetsEncoder
+from .policy_heads import PolicyHeads
 
 
 @dataclass
 class PPOConfig:
-    gamma: float = 0.99
-    lam: float = 0.95
+    learning_rate: float = 3e-4
     clip_ratio: float = 0.2
-    lr: float = 3e-4
-    train_iters: int = 4
-    batch_size: int = 32
+    epochs: int = 4
+    value_coef: float = 0.5
+    entropy_coef: float = 0.01
 
 
-class PPOAgent:
-    """Minimal PPO trainer that works with :class:`MaestroEnv`."""
+class TeacherPolicy(nn.Module):
+    def __init__(self, descriptor_dim: int, context_dim: int, eta_bounds: tuple[float, float]):
+        super().__init__()
+        self.encoder = DeepSetsEncoder(input_dim=descriptor_dim, phi_dim=64, rho_dim=64)
+        self.policy_heads = PolicyHeads(
+            descriptor_dim=64 + context_dim,
+            context_dim=64 + context_dim,
+            eta_bounds=eta_bounds,
+        )
+        self.value_head = nn.Sequential(
+            nn.Linear(64 + context_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1),
+        )
 
-    def __init__(self, observation_dim: int, action_dim: int, config: PPOConfig | None = None):
-        self.config = config or PPOConfig()
-        self.device = torch.device("cpu")
-        self.model = ActorCritic(observation_dim, action_dim).to(self.device)
-        self.optimizer = optim.Adam(self.model.parameters(), lr=self.config.lr)
+    def forward(self, observation: Dict[str, np.ndarray], descriptors: np.ndarray):
+        g_data = torch.from_numpy(observation["g_data"]).float()
+        g_model = torch.from_numpy(observation["g_model"]).float()
+        g_progress = torch.from_numpy(observation["g_progress"]).float()
+        context = torch.cat([g_data, g_model, g_progress], dim=0)
+        descriptors_tensor = torch.from_numpy(descriptors).float()
+        summary, encoded = self.encoder(descriptors_tensor)
+        repeated_context = torch.cat([summary, context], dim=0)
+        expanded = torch.cat([encoded, context.expand(encoded.size(0), -1)], dim=-1)
+        mixture, eta, usage = self.policy_heads(expanded, repeated_context)
+        value = self.value_head(repeated_context)
+        return mixture, eta, usage, value
 
-    def act(self, observation: np.ndarray, deterministic: bool = False) -> Tuple[int, float, float]:
-        obs = torch.tensor(observation, dtype=torch.float32, device=self.device).unsqueeze(0)
-        logits, value = self.model(obs)
-        dist = torch.distributions.Categorical(logits=logits)
-        if deterministic:
-            action = torch.argmax(dist.probs, dim=-1)
-        else:
-            action = dist.sample()
-        log_prob = dist.log_prob(action)
-        return int(action.item()), float(log_prob.item()), float(value.item())
+    def act(self, observation: Dict[str, np.ndarray], descriptors: np.ndarray):
+        mixture, eta, usage, value = self.forward(observation, descriptors)
+        action = {
+            "w": mixture.detach().cpu().numpy(),
+            "eta": np.array([eta.item()], dtype=np.float32),
+            "u": np.array([usage.item()], dtype=np.float32),
+        }
+        log_prob = torch.tensor(0.0)
+        return action, log_prob, value
 
-    def update(self, trajectories: dict[str, np.ndarray]) -> dict[str, float]:
-        obs = torch.tensor(trajectories["obs"], dtype=torch.float32, device=self.device)
-        act = torch.tensor(trajectories["act"], dtype=torch.int64, device=self.device)
-        adv = torch.tensor(trajectories["adv"], dtype=torch.float32, device=self.device)
-        logp_old = torch.tensor(trajectories["logp"], dtype=torch.float32, device=self.device)
-        ret = torch.tensor(trajectories["ret"], dtype=torch.float32, device=self.device)
 
-        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-        metrics: dict[str, float] = {}
-        for _ in range(self.config.train_iters):
-            logits, value = self.model(obs)
-            dist = torch.distributions.Categorical(logits=logits)
-            logp = dist.log_prob(act)
-            ratio = torch.exp(logp - logp_old)
-            clip_adv = torch.clamp(ratio, 1 - self.config.clip_ratio, 1 + self.config.clip_ratio) * adv
-            loss_pi = -(torch.min(ratio * adv, clip_adv)).mean()
-            loss_v = ((value - ret) ** 2).mean()
-            entropy = dist.entropy().mean()
+class PPOTeacher:
+    def __init__(self, policy: TeacherPolicy, config: PPOConfig):
+        self.policy = policy
+        self.config = config
+        self.optim = Adam(self.policy.parameters(), lr=config.learning_rate)
 
-            loss = loss_pi + 0.5 * loss_v - 0.01 * entropy
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-
-        metrics["loss_pi"] = float(loss_pi.item())
-        metrics["loss_v"] = float(loss_v.item())
-        metrics["entropy"] = float(entropy.item())
-        return metrics
-
-    @staticmethod
-    def compute_gae(rewards: np.ndarray, values: np.ndarray, dones: np.ndarray, gamma: float, lam: float) -> Tuple[np.ndarray, np.ndarray]:
-        T = len(rewards)
-        adv = np.zeros(T, dtype=np.float32)
-        lastgaelam = 0
-        for t in reversed(range(T)):
-            if t == T - 1:
-                nextnonterminal = 1.0 - dones[t]
-                nextvalues = values[t]
-            else:
-                nextnonterminal = 1.0 - dones[t + 1]
-                nextvalues = values[t + 1]
-            delta = rewards[t] + gamma * nextvalues * nextnonterminal - values[t]
-            lastgaelam = delta + gamma * lam * nextnonterminal * lastgaelam
-            adv[t] = lastgaelam
-        ret = adv + values
-        return adv, ret
+    def train_episode(self, env: MaestroEnv, horizon: int) -> Dict[str, float]:
+        obs, _ = env.reset()
+        descriptors = env.last_per_dataset_descriptors
+        ep_reward = 0.0
+        for _ in range(horizon):
+            action, _, _ = self.policy.act(obs, descriptors)
+            obs, reward, done, _, info = env.step(action)
+            descriptors = env.last_per_dataset_descriptors
+            ep_reward += reward
+            if done:
+                break
+        return {"return": ep_reward}

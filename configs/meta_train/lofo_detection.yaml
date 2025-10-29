@@ -1,0 +1,15 @@
+defaults: [../defaults]
+run:
+  id: lofo_detection
+  total_episodes: 5
+  dry_run: true
+tasks:
+  - configs/tasks/classification.yaml
+  - configs/tasks/ner.yaml
+eval_tasks:
+  - configs/tasks/detection.yaml
+teacher:
+  hidden_dim: 96
+  dataset_head_dim: 64
+  policy_hidden: [128, 128]
+  value_hidden: [128, 128]

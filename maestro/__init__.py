@@ -1,4 +1,5 @@
-"""Maestro reinforcement learning framework."""
-from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
+"""MAESTRO experiments package."""
+
+from .envs.maestro_env import MaestroEnv, MaestroEnvConfig
 
 __all__ = ["MaestroEnv", "MaestroEnvConfig"]
