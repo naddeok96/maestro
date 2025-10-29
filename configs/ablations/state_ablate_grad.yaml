@@ -1,0 +1,9 @@
+defaults: [../defaults]
+run:
+  id: ablate_grad
+  total_episodes: 2
+  dry_run: true
+tasks:
+  - configs/tasks/classification.yaml
+ablations:
+  drop_grad_cosine: true

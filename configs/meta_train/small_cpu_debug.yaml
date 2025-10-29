@@ -1,0 +1,13 @@
+defaults: [../defaults]
+run:
+  id: debug_run
+  total_episodes: 3
+  dry_run: false
+tasks:
+  - configs/tasks/classification.yaml
+  - configs/tasks/ner.yaml
+teacher:
+  hidden_dim: 64
+  dataset_head_dim: 64
+  policy_hidden: [128, 128]
+  value_hidden: [128, 128]

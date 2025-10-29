@@ -1,0 +1,9 @@
+task_family: ner
+datasets:
+  count: 2
+  vocab_size: 30
+  num_tags: 5
+  train_size: 200
+  val_size: 100
+  probe_size: 64
+  noise: 0.1
