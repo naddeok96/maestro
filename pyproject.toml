@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maestro"
+version = "0.1.0"
+description = "Meta-tutoring reinforcement learning environment"
+authors = [{name = "Maestro Team"}]
+requires-python = ">=3.9"
+dependencies = [
+    "gymnasium",
+    "numpy",
+    "torch",
+    "matplotlib",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["maestro*"]

@@ -1,0 +1,15 @@
+curriculum:
+  dim: 4
+  difficulty_levels: [0.2, 0.4, 0.6, 0.8, 1.0]
+  seed: 42
+env:
+  max_steps: 50
+  probes_per_step: 8
+  budget: 10.0
+ppo:
+  gamma: 0.99
+  lam: 0.95
+  clip_ratio: 0.2
+  lr: 0.0003
+  train_iters: 4
+  batch_size: 32
