@@ -1,4 +1,5 @@
 """Gradient utilities for MAESTRO."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,13 +20,18 @@ class GradientProjector:
     def __post_init__(self) -> None:
         rng = np.random.default_rng(self.seed)
         self.matrix = torch.from_numpy(
-            rng.normal(scale=1.0 / np.sqrt(self.output_dim), size=(self.output_dim, self.input_dim))
+            rng.normal(
+                scale=1.0 / np.sqrt(self.output_dim),
+                size=(self.output_dim, self.input_dim),
+            )
         ).float()
 
     def project(self, vector: torch.Tensor) -> torch.Tensor:
         vector = vector.view(-1).float()
         if vector.numel() < self.input_dim:
-            padded = torch.zeros(self.input_dim, dtype=torch.float32, device=vector.device)
+            padded = torch.zeros(
+                self.input_dim, dtype=torch.float32, device=vector.device
+            )
             padded[: vector.numel()] = vector
             vector = padded
         elif vector.numel() > self.input_dim:
@@ -93,7 +99,9 @@ class RobustScalarNormalizer:
         else:
             self.median_ema = self.beta * self.median_ema + (1.0 - self.beta) * value
             deviation = abs(value - self.median_ema)
-            self.iqr_ema = self.beta * self.iqr_ema + (1.0 - self.beta) * max(deviation, self.eps)
+            self.iqr_ema = self.beta * self.iqr_ema + (1.0 - self.beta) * max(
+                deviation, self.eps
+            )
         return (value - self.median_ema) / (self.iqr_ema + self.eps)
 
 
@@ -116,6 +124,8 @@ def l2_norm(vector: torch.Tensor, eps: float = 1e-8) -> float:
     return float(torch.norm(vector).item() + eps)
 
 
-def parameter_change(previous: torch.Tensor, current: torch.Tensor, eps: float = 1e-8) -> float:
+def parameter_change(
+    previous: torch.Tensor, current: torch.Tensor, eps: float = 1e-8
+) -> float:
     delta = current - previous
     return float(torch.norm(delta) / (torch.norm(previous) + eps))

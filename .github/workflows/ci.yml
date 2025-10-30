@@ -16,11 +16,13 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
-          pip install pytest gymnasium torch matplotlib
-      - name: Lint
+          pip install -e '.[dev]'
+      - name: Lint & type-check
         run: |
-          python -m compileall maestro
+          black --check .
+          isort --check-only .
+          flake8 .
+          mypy maestro/datasets/collate.py
       - name: Run tests
         run: |
           pytest -q

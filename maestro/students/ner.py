@@ -1,4 +1,5 @@
 """Synthetic NER student."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,7 +28,9 @@ class NERStudent(nn.Module):
         self.encoder = nn.LSTM(self.hidden_dim, self.hidden_dim, batch_first=True)
         self.decoder = nn.Linear(self.hidden_dim, self.num_tags)
         self.loss_fn = nn.CrossEntropyLoss(reduction="none")
-        self._optimizer: torch.optim.Optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        self._optimizer: torch.optim.Optimizer = torch.optim.Adam(
+            self.parameters(), lr=1e-3
+        )
 
     @property
     def device(self) -> torch.device:
@@ -46,7 +49,9 @@ class NERStudent(nn.Module):
         logits = self.decoder(encoded)
         return logits
 
-    def step_on_minibatch(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> Dict[str, float]:
+    def step_on_minibatch(
+        self, batch: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Dict[str, float]:
         self.train()
         tokens, tags = batch
         tokens = tokens.to(self.device)
@@ -78,13 +83,18 @@ class NERStudent(nn.Module):
                 tokens = tokens.to(self.device)
                 tags = tags.to(self.device)
                 logits = self.forward(tokens)
-                per_token_loss = self.loss_fn(logits.view(-1, self.num_tags), tags.view(-1))
+                per_token_loss = self.loss_fn(
+                    logits.view(-1, self.num_tags), tags.view(-1)
+                )
                 total_loss += per_token_loss.sum().item()
                 total_tokens += tags.numel()
                 total_correct += (logits.argmax(dim=-1) == tags).sum().item()
         if total_tokens == 0:
             return {"loss": 0.0, "accuracy": 0.0}
-        return {"loss": total_loss / total_tokens, "accuracy": total_correct / total_tokens}
+        return {
+            "loss": total_loss / total_tokens,
+            "accuracy": total_correct / total_tokens,
+        }
 
     def feature_embed(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         tokens, _ = batch

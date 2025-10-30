@@ -1,4 +1,5 @@
 """Markovity diagnostics."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,7 +18,9 @@ class Transition:
 
 
 def _flatten_state(state: Dict[str, np.ndarray]) -> np.ndarray:
-    return np.concatenate([state["g_data"], state["g_model"], state["g_progress"]], axis=0)
+    return np.concatenate(
+        [state["g_data"], state["g_model"], state["g_progress"]], axis=0
+    )
 
 
 def _flatten_action(action: Dict[str, np.ndarray]) -> np.ndarray:
@@ -48,9 +51,16 @@ def compute_markov_diagnostics(transitions: List[Transition]) -> Dict[str, float
     resid_big = ((S_tp1 - pred_big) ** 2).sum()
     linear_r2_big = float(np.clip(1.0 - resid_big / max(tot, 1e-8), -1.0, 1.0))
     delta_r2 = max(0.0, linear_r2_big - linear_r2)
-    mlp = MLPRegressor(hidden_layer_sizes=(128, 128), activation="relu", max_iter=500, random_state=0)
+    mlp = MLPRegressor(
+        hidden_layer_sizes=(128, 128), activation="relu", max_iter=500, random_state=0
+    )
     mlp.fit(S_t, S_tp1)
     pred_mlp = mlp.predict(S_t)
     resid_mlp = ((S_tp1 - pred_mlp) ** 2).sum()
     mlp_r2 = float(np.clip(1.0 - resid_mlp / max(tot, 1e-8), -1.0, 1.0))
-    return {"r2": linear_r2, "linear_r2": linear_r2, "delta_r2": delta_r2, "mlp_r2": mlp_r2}
+    return {
+        "r2": linear_r2,
+        "linear_r2": linear_r2,
+        "delta_r2": delta_r2,
+        "mlp_r2": mlp_r2,
+    }

@@ -1,11 +1,12 @@
 """Logging helpers for MAESTRO runs."""
+
 from __future__ import annotations
 
 import csv
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, Optional
+from typing import Dict, Optional
 
 
 @dataclass
@@ -13,7 +14,7 @@ class MetricsLogger:
     output_dir: Path
     csv_filename: str = "metrics.csv"
     json_filename: str = "metrics.json"
-    csv_fieldnames: Optional[Iterable[str]] = None
+    csv_fieldnames: Optional[list[str]] = None
 
     def __post_init__(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -26,7 +27,9 @@ class MetricsLogger:
             self.csv_fieldnames = list(row.keys())
         self.rows.append(row)
         with self.csv_path.open("a", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=self.csv_fieldnames)
+            writer: csv.DictWriter[str] = csv.DictWriter(
+                handle, fieldnames=self.csv_fieldnames
+            )
             if self.csv_path.stat().st_size == 0:
                 writer.writeheader()
             writer.writerow(row)

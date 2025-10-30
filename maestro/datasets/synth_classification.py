@@ -1,4 +1,5 @@
 """Synthetic classification datasets for MAESTRO."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -32,7 +33,9 @@ class ClassificationConfig:
     imbalance: float
 
 
-def _sample_dataset(config: ClassificationConfig, rng: np.random.Generator) -> Dict[str, np.ndarray]:
+def _sample_dataset(
+    config: ClassificationConfig, rng: np.random.Generator
+) -> Dict[str, np.ndarray]:
     centres = rng.normal(size=(config.num_classes, config.feature_dim))
     cov = np.eye(config.feature_dim)
 
@@ -64,12 +67,18 @@ def _sample_dataset(config: ClassificationConfig, rng: np.random.Generator) -> D
     }
 
 
-def build_classification_dataset(name: str, config: ClassificationConfig, seed: int) -> Dict[str, Dataset]:
+def build_classification_dataset(
+    name: str, config: ClassificationConfig, seed: int
+) -> Dict[str, Dataset]:
     rng = np.random.default_rng(seed)
     arrays = _sample_dataset(config, rng)
     return {
         "train": ClassificationDataset(arrays["train_x"], arrays["train_y"]),
         "val": ClassificationDataset(arrays["val_x"], arrays["val_y"]),
         "probe": ClassificationDataset(arrays["probe_x"], arrays["probe_y"]),
-        "metadata": {"num_classes": config.num_classes, "feature_dim": config.feature_dim, "name": name},
+        "metadata": {
+            "num_classes": config.num_classes,
+            "feature_dim": config.feature_dim,
+            "name": name,
+        },
     }

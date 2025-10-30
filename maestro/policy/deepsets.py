@@ -1,4 +1,5 @@
 """DeepSets encoder for dataset descriptors."""
+
 from __future__ import annotations
 
 from typing import Tuple
@@ -7,7 +8,9 @@ import torch
 from torch import nn
 
 
-def _mlp(input_dim: int, hidden_dims: Tuple[int, ...], output_dim: int) -> nn.Sequential:
+def _mlp(
+    input_dim: int, hidden_dims: Tuple[int, ...], output_dim: int
+) -> nn.Sequential:
     layers = []
     last_dim = input_dim
     for hidden in hidden_dims:

@@ -1,4 +1,5 @@
 """Run MAESTRO meta-training with PPO."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,7 +11,7 @@ import torch
 
 from maestro.datasets import build_from_config
 from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
-from maestro.policy.ppo import PPOTeacher, PPOConfig, TeacherPolicy
+from maestro.policy.ppo import PPOConfig, PPOTeacher, TeacherPolicy
 from maestro.utils import RunPaths
 from maestro.utils.config import load_config
 from maestro.utils.logging import MetricsLogger
@@ -38,7 +39,11 @@ def build_env_for_task(config: Dict[str, Any], task_cfg: str, seed: int) -> Maes
 
 def get_output_directory(config: Dict[str, Any], args: argparse.Namespace) -> Path:
     logging_cfg = config.get("logging", {})
-    output_dir_arg = Path(args.output_dir) if args.output_dir else Path(logging_cfg.get("output_dir", "outputs/run"))
+    output_dir_arg = (
+        Path(args.output_dir)
+        if args.output_dir
+        else Path(logging_cfg.get("output_dir", "outputs/run"))
+    )
     run_id = config.get("run", {}).get("id", "debug")
     run_paths = RunPaths(output_dir_arg.parent, output_dir_arg.name)
     return run_paths.resolve() / run_id
@@ -56,11 +61,17 @@ def load_checkpoint(path: Path) -> Dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run MAESTRO meta-training")
-    parser.add_argument("--config", type=Path, required=True, help="Path to the training config")
+    parser.add_argument(
+        "--config", type=Path, required=True, help="Path to the training config"
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print config and exit")
     parser.add_argument("--seed", type=int, default=None, help="Override training seed")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Override output directory")
-    parser.add_argument("--resume", type=Path, default=None, help="Resume from checkpoint")
+    parser.add_argument(
+        "--output-dir", type=Path, default=None, help="Override output directory"
+    )
+    parser.add_argument(
+        "--resume", type=Path, default=None, help="Resume from checkpoint"
+    )
     parser.add_argument(
         "--deterministic-eval",
         action="store_true",

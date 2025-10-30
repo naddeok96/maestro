@@ -1,4 +1,5 @@
 """Run evaluation for a trained teacher."""
+
 from __future__ import annotations
 
 import argparse
@@ -8,8 +9,8 @@ from typing import Any, Dict, Iterable
 from maestro.datasets import build_from_config
 from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
 from maestro.policy.ppo import TeacherPolicy
-from maestro.utils.serialization import load_checkpoint
 from maestro.utils.config import load_config
+from maestro.utils.serialization import load_checkpoint
 
 
 def build_env_from_task(config: Dict[str, Any], task_cfg: str, seed: int) -> MaestroEnv:

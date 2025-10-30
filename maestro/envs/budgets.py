@@ -1,4 +1,5 @@
 """Budget handling for the CMDP formulation."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

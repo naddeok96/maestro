@@ -1,4 +1,5 @@
 """Policy heads for MAESTRO."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,7 +7,6 @@ from typing import Sequence
 
 import torch
 from torch import nn
-
 
 
 def _build_mlp(input_dim: int, hidden: Sequence[int], output_dim: int) -> nn.Sequential:
@@ -68,7 +68,7 @@ class PolicyHeads(nn.Module):
         self,
         encoded_datasets: torch.Tensor,
         context: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> PolicyHeadOutput:
         logits = self.mixture_head(encoded_datasets, context)
         lr_logit = self.lr_head(context).squeeze(-1)
         usage_logit = self.usage_head(context).squeeze(-1)

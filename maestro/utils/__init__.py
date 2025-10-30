@@ -1,4 +1,6 @@
 """Utility exports for convenience."""
+
+from .flops import estimate_flops
 from .grads import (
     ExponentialMovingAverage,
     GradientProjector,
@@ -9,7 +11,6 @@ from .grads import (
     l2_norm,
     parameter_change,
 )
-from .flops import estimate_flops
 from .logging import MetricsLogger, RunPaths
 from .schedules import OptimizerSettings, clamp_learning_rate
 from .seeding import seed_everything

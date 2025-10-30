@@ -1,4 +1,5 @@
 """Handles student updates given teacher actions."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from maestro.datasets import DatasetSpec
+from maestro.datasets.collate import detection_collate
 from maestro.envs.metrics import macro_average
 from maestro.utils import (
     ExponentialMovingAverage,
@@ -65,7 +67,9 @@ class StudentRunner:
         self.grad_ema = ExponentialMovingAverage(grad_ema_beta)
         self.grad_norm_ema = ExponentialMovingAverage(grad_norm_alpha)
         self.prev_grad = torch.zeros(grad_project_dim)
-        self.prev_params = flatten_parameters(list(self.student.parameters())).detach().cpu()
+        self.prev_params = (
+            flatten_parameters(list(self.student.parameters())).detach().cpu()
+        )
         self.probe_manager = ProbeManager(
             student=self.student,
             datasets=self.datasets,
@@ -74,10 +78,12 @@ class StudentRunner:
             device=device,
             seed=seed,
         )
-        self.eval_loaders = {
-            spec.name: DataLoader(spec.val, batch_size=batch_size)
-            for spec in self.datasets
-        }
+        self.eval_loaders = {}
+        for spec in self.datasets:
+            collate = detection_collate if spec.task_type == "detection" else None
+            self.eval_loaders[spec.name] = DataLoader(
+                spec.val, batch_size=batch_size, collate_fn=collate
+            )
 
     def _sample_batch(self, dataset: DatasetSpec):
         indices = self.rng.integers(0, len(dataset.train), size=self.batch_size)
@@ -124,11 +130,17 @@ class StudentRunner:
         grad_proj = self.projector.project(grad_mean)
         ema = self.grad_ema.update(grad_proj.cpu())
         grad_norm = float(grad_mean.norm().item())
-        grad_norm_ema = float(self.grad_norm_ema.update(torch.tensor([grad_norm])).item())
-        grad_cos = torch.nn.functional.cosine_similarity(grad_proj, self.prev_grad, dim=0).item()
+        grad_norm_ema = float(
+            self.grad_norm_ema.update(torch.tensor([grad_norm])).item()
+        )
+        grad_cos = torch.nn.functional.cosine_similarity(
+            grad_proj, self.prev_grad, dim=0
+        ).item()
         self.prev_grad = grad_proj.detach().cpu()
 
-        current_params = flatten_parameters(list(self.student.parameters())).detach().cpu()
+        current_params = (
+            flatten_parameters(list(self.student.parameters())).detach().cpu()
+        )
         param_delta = parameter_change(self.prev_params, current_params)
         self.prev_params = current_params
 
@@ -136,8 +148,15 @@ class StudentRunner:
             spec.name: self.student.eval_on_loader(self.eval_loaders[spec.name])
             for spec in self.datasets
         }
-        macro_acc = macro_average({name: metrics.get("accuracy", 0.0) for name, metrics in dataset_metrics.items()})
-        val_loss = float(np.mean([metrics.get("loss", 0.0) for metrics in dataset_metrics.values()]))
+        macro_acc = macro_average(
+            {
+                name: metrics.get("accuracy", 0.0)
+                for name, metrics in dataset_metrics.items()
+            }
+        )
+        val_loss = float(
+            np.mean([metrics.get("loss", 0.0) for metrics in dataset_metrics.values()])
+        )
         train_loss = float(np.mean(loss_accum)) if loss_accum else 0.0
 
         descriptors = self.probe_manager.compute_descriptors(self.prev_grad, ema)

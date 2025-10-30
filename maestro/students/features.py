@@ -1,4 +1,5 @@
 """Feature extraction helpers for students."""
+
 from __future__ import annotations
 
 import torch

@@ -1,4 +1,5 @@
 """OOD grid evaluation."""
+
 from __future__ import annotations
 
 from typing import Dict, List
@@ -9,7 +10,9 @@ from maestro.envs.maestro_env import MaestroEnv
 from maestro.policy.ppo import TeacherPolicy
 
 
-def evaluate_ood_grid(envs: List[MaestroEnv], policy: TeacherPolicy, steps: int) -> Dict[str, float]:
+def evaluate_ood_grid(
+    envs: List[MaestroEnv], policy: TeacherPolicy, steps: int
+) -> Dict[str, float]:
     results = []
     for env in envs:
         obs, _ = env.reset()

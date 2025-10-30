@@ -1,4 +1,5 @@
 """Run Markov diagnostics."""
+
 from __future__ import annotations
 
 import argparse
@@ -57,12 +58,16 @@ def main() -> None:
         for _ in range(config["horizon"]):
             action, _, _, _ = policy.act(obs, descriptors)
             next_obs, reward, done, _, _ = env.step(action)
-            transitions.append(Transition(state=obs, action=action, next_state=next_obs))
+            transitions.append(
+                Transition(state=obs, action=action, next_state=next_obs)
+            )
             obs = next_obs
             descriptors = env.last_per_dataset_descriptors
             if done:
                 break
-        diagnostics_per_task[Path(task_cfg).stem] = compute_markov_diagnostics(transitions)
+        diagnostics_per_task[Path(task_cfg).stem] = compute_markov_diagnostics(
+            transitions
+        )
         env.close()
     print(diagnostics_per_task)
 

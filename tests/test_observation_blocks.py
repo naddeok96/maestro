@@ -31,8 +31,16 @@ def make_env() -> MaestroEnv:
 def test_progress_updates_with_learning_rate():
     env = make_env()
     obs, _ = env.reset()
-    action_low = {"w": np.ones(len(env.datasets)) / len(env.datasets), "eta": np.array([1e-5]), "u": np.array([0.2])}
+    action_low = {
+        "w": np.ones(len(env.datasets)) / len(env.datasets),
+        "eta": np.array([1e-5]),
+        "u": np.array([0.2]),
+    }
     obs_low, _, _, _, _ = env.step(action_low)
-    action_high = {"w": np.ones(len(env.datasets)) / len(env.datasets), "eta": np.array([1e-2]), "u": np.array([0.2])}
+    action_high = {
+        "w": np.ones(len(env.datasets)) / len(env.datasets),
+        "eta": np.array([1e-2]),
+        "u": np.array([0.2]),
+    }
     obs_high, _, _, _, _ = env.step(action_high)
     assert obs_high["g_progress"][2] > obs_low["g_progress"][2]

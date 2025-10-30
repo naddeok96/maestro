@@ -33,7 +33,11 @@ def test_env_step_shapes():
     env = make_env()
     obs, _ = env.reset()
     assert obs["g_data"].shape == (8,)
-    action = {"w": np.ones(len(env.datasets)) / len(env.datasets), "eta": np.array([1e-3]), "u": np.array([0.5])}
+    action = {
+        "w": np.ones(len(env.datasets)) / len(env.datasets),
+        "eta": np.array([1e-3]),
+        "u": np.array([0.5]),
+    }
     next_obs, reward, done, _, info = env.step(action)
     assert next_obs["g_model"].shape == (6,)
     assert info["usage"] > 0
