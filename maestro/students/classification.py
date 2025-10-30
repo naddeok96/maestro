@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from maestro.utils import OptimizerSettings, flatten_gradients
 
 
-@dataclass
+@dataclass(eq=False)
 class ClassificationStudent(nn.Module):
     input_dim: int
     num_classes: int

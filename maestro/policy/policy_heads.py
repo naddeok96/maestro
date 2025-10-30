@@ -1,12 +1,12 @@
 """Policy heads for MAESTRO."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Sequence
 
 import torch
 from torch import nn
 
-from .distributions import bounded_scalar, simplex_from_logits
 
 
 def _build_mlp(input_dim: int, hidden: Sequence[int], output_dim: int) -> nn.Sequential:
@@ -40,6 +40,15 @@ class ScalarHead(nn.Module):
         return self.net(context)
 
 
+@dataclass
+class PolicyHeadOutput:
+    """Container for raw policy head outputs."""
+
+    mixture_logits: torch.Tensor
+    lr_logit: torch.Tensor
+    usage_logit: torch.Tensor
+
+
 class PolicyHeads(nn.Module):
     def __init__(
         self,
@@ -61,9 +70,10 @@ class PolicyHeads(nn.Module):
         context: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         logits = self.mixture_head(encoded_datasets, context)
-        mixture = simplex_from_logits(logits)
-        lr_logit = self.lr_head(context)
-        usage_logit = self.usage_head(context)
-        eta = bounded_scalar(lr_logit, self.eta_bounds[0], self.eta_bounds[1])
-        usage = torch.sigmoid(usage_logit)
-        return mixture, eta.squeeze(-1), usage.squeeze(-1)
+        lr_logit = self.lr_head(context).squeeze(-1)
+        usage_logit = self.usage_head(context).squeeze(-1)
+        return PolicyHeadOutput(
+            mixture_logits=logits,
+            lr_logit=lr_logit,
+            usage_logit=usage_logit,
+        )

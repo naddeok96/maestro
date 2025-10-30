@@ -15,7 +15,7 @@ def _make_mask(tags: torch.Tensor) -> torch.Tensor:
     return torch.ones_like(tags, dtype=torch.float32)
 
 
-@dataclass
+@dataclass(eq=False)
 class NERStudent(nn.Module):
     vocab_size: int
     num_tags: int

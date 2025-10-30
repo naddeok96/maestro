@@ -12,7 +12,7 @@ from maestro.envs.metrics import detection_iou
 from maestro.utils import OptimizerSettings, flatten_gradients
 
 
-@dataclass
+@dataclass(eq=False)
 class DetectionStudent(nn.Module):
     image_size: int
     max_predictions: int = 2
