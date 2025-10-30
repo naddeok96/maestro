@@ -26,6 +26,9 @@ class ObservationBuilder:
     def __init__(self, datasets: List[DatasetSpec], total_budget: float) -> None:
         self.datasets = datasets
         self.total_budget = total_budget
+        self.reset()
+
+    def reset(self) -> None:
         self.previous_val_loss = 0.0
         self.previous_gradient_cos = 0.0
         self.previous_macro = 0.0
