@@ -117,6 +117,8 @@ class ObservationBuilder:
         dataset_names = [spec.name for spec in self.datasets]
         descriptor_list = [segment.descriptors[name] for name in dataset_names]
         descriptors = torch.stack(descriptor_list).numpy()
+        # Expose the mean descriptor as g_data; the DeepSets summary is computed
+        # inside the policy to match the paper's \rho(mean(\phi(z))) aggregation.
         g_data = descriptors.mean(axis=0)
         g_model = self._model_features(student)
         g_progress = self._progress_features(step_index, horizon, remaining_budget, segment)

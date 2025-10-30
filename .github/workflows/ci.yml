@@ -26,4 +26,5 @@ jobs:
           pytest -q
       - name: Debug rollout
         run: |
-          python scripts/evaluate.py --episodes 1 --steps 5 --out runs/debug.jsonl
+          python scripts/run_meta_train.py --config configs/meta_train/small_cpu_debug.yaml --dry-run
+          python scripts/run_eval.py --config configs/meta_train/lofo_classification.yaml
