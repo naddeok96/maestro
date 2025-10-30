@@ -129,6 +129,11 @@ class MaestroEnv(gym.Env):
         return self._to_gym_obs(observation), {}
 
     def step(self, action: Dict[str, np.ndarray]):
+        action = {
+            "w": np.asarray(action["w"], dtype=np.float32),
+            "eta": np.asarray(action["eta"], dtype=np.float32),
+            "u": np.asarray(action["u"], dtype=np.float32),
+        }
         if not self.action_space.contains(action):
             raise gym.error.InvalidAction("Action outside bounds")
         mixture = np.array(action["w"], dtype=np.float32)
