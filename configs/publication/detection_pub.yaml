@@ -1,0 +1,9 @@
+task_family: detection
+datasets:
+  count: 8
+  image_size: 64
+  train_size: 4096
+  val_size: 1024
+  probe_size: 512
+  max_objects: 8
+  noise: 0.1

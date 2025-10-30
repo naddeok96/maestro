@@ -63,37 +63,34 @@ echo "RUN_DIR: $RUN_DIR"
 echo "Logs:    $LOG_DIR"
 echo
 
-# Optional: if your meta-train script saves a checkpoint to policy.pt,
-# eval commands below will auto-use it. If not, eval still runs with random init.
-ckpt_arg() {
-  local subdir="$1"               # e.g., "lofo_detection"
-  local ckpt="$RUN_DIR/$subdir/policy.pt"
-  if [[ -f "$ckpt" ]]; then
-    echo "--checkpoint '$ckpt'"
-  else
-    echo ""
-  fi
-}
+# Helper to compute the checkpoint path:
+# run_meta_train writes to: <output_dir>/<run.id>/policy.pt
+RUN_ID_DEBUG="debug_run"
+RUN_ID_LOFO_DET="lofo_detection"
+RUN_ID_LOFO_CLS="lofo_classification"
+CKPT_DEBUG="$RUN_DIR/debug/$RUN_ID_DEBUG/policy.pt"
+CKPT_LOFO_DET="$RUN_DIR/lofo_detection/$RUN_ID_LOFO_DET/policy.pt"
+CKPT_LOFO_CLS="$RUN_DIR/lofo_classification/$RUN_ID_LOFO_CLS/policy.pt"
 
 # 1) Meta-train (quick debug) -> then plot its learning curve
 launch_tmux \
   "maestro_debug" "$GPU_DEBUG" \
   "$PY scripts/run_meta_train.py --config configs/overrides/debug.yaml && \
-   $PY scripts/plot_make_figures.py --run-dir '$RUN_DIR/debug'" \
+   $PY scripts/plot_make_figures.py --run-dir '$RUN_DIR/debug/$RUN_ID_DEBUG'" \
   "$LOG_DIR/meta_train_debug.log"
 
 # 2) LOFO: train on classification+NER, eval held-out detection
 launch_tmux \
   "maestro_lofo_det" "$GPU_LOFO_DET" \
   "$PY scripts/run_meta_train.py --config configs/overrides/lofo_detection.yaml && \
-   $PY scripts/run_eval.py --config configs/overrides/lofo_detection.yaml --steps 10 \$(ckpt_arg lofo_detection)" \
+   $PY scripts/run_eval.py --config configs/overrides/lofo_detection.yaml --steps 10 --checkpoint '$CKPT_LOFO_DET'" \
   "$LOG_DIR/lofo_detection.log"
 
 # 3) LOFO: classification variant
 launch_tmux \
   "maestro_lofo_cls" "$GPU_LOFO_CLS" \
   "$PY scripts/run_meta_train.py --config configs/overrides/lofo_classification.yaml && \
-   $PY scripts/run_eval.py --config configs/overrides/lofo_classification.yaml --steps 10 \$(ckpt_arg lofo_classification)" \
+   $PY scripts/run_eval.py --config configs/overrides/lofo_classification.yaml --steps 10 --checkpoint '$CKPT_LOFO_CLS'" \
   "$LOG_DIR/lofo_classification.log"
 
 # 4) Markov diagnostics (uses the debug config; runs fast)

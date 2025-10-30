@@ -1,0 +1,10 @@
+task_family: ner
+datasets:
+  count: 8
+  vocab_size: 500
+  num_tags: 15
+  train_size: 6400
+  val_size: 1600
+  probe_size: 800
+  sequence_length: 32
+  noise: 0.12

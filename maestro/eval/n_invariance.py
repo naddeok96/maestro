@@ -16,7 +16,7 @@ def evaluate_permutations(env: MaestroEnv, policy: TeacherPolicy, permutations: 
         obs, _ = env.reset()
         descriptors = env.last_per_dataset_descriptors
         permuted = descriptors[perm]
-        action, _, _ = policy.act(obs, permuted)
+        action, _, _, _ = policy.act(obs, permuted)
         obs, reward, done, _, info = env.step(action)
         results.append(info["macro_accuracy"])
     return {"mean_macro": float(np.mean(results)), "std_macro": float(np.std(results))}

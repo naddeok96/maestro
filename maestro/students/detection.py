@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from maestro.envs.metrics import detection_iou
+from maestro.envs.metrics import mean_average_precision
 from maestro.utils import OptimizerSettings, flatten_gradients
 
 
@@ -81,26 +81,20 @@ class DetectionStudent(nn.Module):
         return out
 
     def eval_on_loader(self, loader: DataLoader) -> Dict[str, float]:
+        """Evaluate with mAP@0.5 IoU for publication-quality detection metric."""
         self.eval()
-        aps = []
+        all_preds: List[List[Tuple[float, torch.Tensor]]] = []
+        all_targets: List[List[torch.Tensor]] = []
         with torch.no_grad():
             for images, targets in loader:
                 images = images.to(self.device)
-                preds = self._predict_boxes(images)
-                batch_iou = []
-                for pred_list, gt_boxes in zip(preds, targets):
-                    if len(gt_boxes) == 0:
-                        batch_iou.append(1.0)
-                        continue
-                    best = 0.0
-                    for _, pred_box in pred_list:
-                        iou = detection_iou(pred_box, gt_boxes[0])
-                        best = max(best, iou)
-                    batch_iou.append(best)
-                aps.extend(batch_iou)
-        if not aps:
+                preds = self._predict_boxes(images)  # list per image of (score, box)
+                all_preds.extend(preds)
+                all_targets.extend([t.detach().cpu() for t in targets])
+        if not all_targets:
             return {"loss": 0.0, "accuracy": 0.0}
-        return {"loss": 0.0, "accuracy": sum(aps) / len(aps)}
+        map50 = mean_average_precision(all_preds, all_targets, iou_threshold=0.5)
+        return {"loss": 0.0, "accuracy": float(map50)}
 
     def feature_embed(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         images, _ = batch
