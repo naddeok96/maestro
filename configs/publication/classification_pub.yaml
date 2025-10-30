@@ -1,0 +1,10 @@
+task_family: classification
+datasets:
+  count: 10
+  num_classes: 20
+  feature_dim: 64
+  train_size: 8192
+  val_size: 2048
+  probe_size: 1024
+  noise: 0.15
+  imbalance: 0.4

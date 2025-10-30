@@ -12,7 +12,7 @@ def evaluate_transfer(env: MaestroEnv, policy: TeacherPolicy, steps: int) -> Dic
     descriptors = env.last_per_dataset_descriptors
     total_reward = 0.0
     for _ in range(steps):
-        action, _, _ = policy.act(obs, descriptors)
+        action, _, _, _ = policy.act(obs, descriptors)
         obs, reward, done, _, info = env.step(action)
         descriptors = env.last_per_dataset_descriptors
         total_reward += reward

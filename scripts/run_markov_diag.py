@@ -55,7 +55,7 @@ def main() -> None:
         obs, _ = env.reset()
         descriptors = env.last_per_dataset_descriptors
         for _ in range(config["horizon"]):
-            action, _, _ = policy.act(obs, descriptors)
+            action, _, _, _ = policy.act(obs, descriptors)
             next_obs, reward, done, _, _ = env.step(action)
             transitions.append(Transition(state=obs, action=action, next_state=next_obs))
             obs = next_obs

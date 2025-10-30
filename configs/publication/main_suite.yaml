@@ -1,0 +1,54 @@
+defaults: [../defaults]
+run:
+  id: publication_main
+  total_episodes: 5000
+  checkpoint_interval: 100
+  eval_interval: 50
+seed: 42
+horizon: 100
+batch_size: 128
+initial_budget: 65536
+
+tasks:
+  - configs/publication/classification_pub.yaml
+  - configs/publication/ner_pub.yaml
+  - configs/publication/detection_pub.yaml
+
+teacher:
+  hidden_dim: 256
+  dataset_head_dim: 256
+  policy_hidden: [512, 512, 256, 128]
+  value_hidden: [512, 512, 256, 128]
+
+probe:
+  size: 512
+  grad_project_dim: 16384
+  grad_ema_beta: 0.97
+  grad_norm_alpha: 0.97
+
+ppo:
+  gamma: 0.995
+  gae_lambda: 0.98
+  clip_ratio: 0.2
+  learning_rate: 3.0e-5
+  minibatch_size: 2048
+  rollout_length: 8192
+  epochs: 15
+  entropy_coef_mix: 0.01
+  entropy_coef_u: 0.002
+  barrier_kappa: 1.0e-4
+  barrier_kappa_prime: 1.0e-4
+  value_coef: 0.5
+  max_grad_norm: 1.0
+
+optimizer:
+  weight_decay: 1.0e-5
+  momentum: 0.95
+  eta_min: 1.0e-6
+  eta_max: 5.0e-2
+
+logging:
+  output_dir: outputs/publication_$(date +%Y%m%d)
+  tensorboard: false
+  csv_interval: 1
+  checkpoint_best: true
