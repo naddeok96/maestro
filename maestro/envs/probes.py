@@ -1,4 +1,5 @@
 """Probe utilities for dataset-level descriptors."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,7 +10,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from maestro.datasets import DatasetSpec
-from maestro.envs.metrics import ece_5
+from maestro.datasets.collate import detection_collate
+from maestro.envs.metrics import binary_ece, ece_5
 from maestro.utils import GradientProjector, RobustScalarNormalizer
 
 
@@ -25,13 +27,21 @@ class ProbeManager:
     def __post_init__(self) -> None:
         self.rng = np.random.default_rng(self.seed)
         self.normalisers: Dict[str, List[RobustScalarNormalizer]] = {
-            spec.name: [RobustScalarNormalizer() for _ in range(8)] for spec in self.datasets
-        }
-        self.probe_loaders = {
-            spec.name: DataLoader(spec.probe, batch_size=self.probe_size, shuffle=True)
+            spec.name: [RobustScalarNormalizer() for _ in range(8)]
             for spec in self.datasets
         }
-        self._iters = {name: iter(loader) for name, loader in self.probe_loaders.items()}
+        self.probe_loaders = {}
+        for spec in self.datasets:
+            collate = detection_collate if spec.task_type == "detection" else None
+            self.probe_loaders[spec.name] = DataLoader(
+                spec.probe,
+                batch_size=self.probe_size,
+                shuffle=True,
+                collate_fn=collate,
+            )
+        self._iters = {
+            name: iter(loader) for name, loader in self.probe_loaders.items()
+        }
 
     def _next_probe_batch(self, name: str):
         try:
@@ -40,7 +50,9 @@ class ProbeManager:
             self._iters[name] = iter(self.probe_loaders[name])
             return next(self._iters[name])
 
-    def compute_descriptors(self, prev_grad: torch.Tensor, grad_ema: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def compute_descriptors(
+        self, prev_grad: torch.Tensor, grad_ema: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
         descriptors: Dict[str, torch.Tensor] = {}
         param_list = list(self.student.parameters())
         for spec in self.datasets:
@@ -50,7 +62,9 @@ class ProbeManager:
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
                 logits = self.student(inputs)
-                loss = torch.nn.functional.cross_entropy(logits, targets, reduction="none")
+                loss = torch.nn.functional.cross_entropy(
+                    logits, targets, reduction="none"
+                )
                 nll_mean = loss.mean().item()
                 q25, q75 = np.percentile(loss.detach().cpu().numpy(), [25, 75])
                 nll_iqr = float(q75 - q25)
@@ -81,7 +95,7 @@ class ProbeManager:
                 boxes = [b.to(self.device) for b in boxes]
                 pred = self.student(images)
                 scores = pred[..., 0]
-                logits = torch.sigmoid(scores)
+                probs = torch.sigmoid(scores)
                 # simple L1 loss between first box and GT
                 loss_components = []
                 l1 = torch.nn.SmoothL1Loss(reduction="none")
@@ -96,15 +110,23 @@ class ProbeManager:
                 nll_mean = loss_tensor.mean().item()
                 q25, q75 = np.percentile(loss_tensor.detach().cpu().numpy(), [25, 75])
                 nll_iqr = float(q75 - q25)
-                entropy = float(-(logits * torch.log(logits + 1e-8)).mean().item())
-                ece = float(torch.abs(logits.mean() - torch.ones_like(logits).mean()).item())
+                entropy = float(-(probs * torch.log(probs + 1e-8)).mean().item())
+                target_scores = torch.zeros_like(scores)
+                for i, gt in enumerate(boxes):
+                    if gt.numel() == 0:
+                        continue
+                    count = min(gt.shape[0], target_scores.size(1))
+                    target_scores[i, :count] = 1.0
+                ece = binary_ece(probs.detach(), target_scores.detach())
                 loss = loss_tensor.mean()
                 grad = torch.autograd.grad(loss, param_list, retain_graph=False)
                 grad_vec = torch.cat([g.view(-1) for g in grad])
 
             grad_proj = self.projector.project(grad_vec.detach().cpu())
             grad_norm = float(grad_vec.norm().item())
-            cos = torch.nn.functional.cosine_similarity(grad_proj, grad_ema, dim=0).item()
+            cos = torch.nn.functional.cosine_similarity(
+                grad_proj, grad_ema, dim=0
+            ).item()
 
             # Diversity via effective rank
             with torch.no_grad():
@@ -132,6 +154,9 @@ class ProbeManager:
                 log_eff_rank,
                 size,
             ]
-            normalised = [norm.update(val) for norm, val in zip(self.normalisers[spec.name], values)]
+            normalised = [
+                norm.update(val)
+                for norm, val in zip(self.normalisers[spec.name], values)
+            ]
             descriptors[spec.name] = torch.tensor(normalised, dtype=torch.float32)
         return descriptors

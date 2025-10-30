@@ -1,4 +1,5 @@
 """Synthetic detection datasets."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,7 +32,9 @@ class DetectionConfig:
     noise: float
 
 
-def _render_boxes(config: DetectionConfig, rng: np.random.Generator, n: int) -> Tuple[np.ndarray, List[np.ndarray]]:
+def _render_boxes(
+    config: DetectionConfig, rng: np.random.Generator, n: int
+) -> Tuple[np.ndarray, List[np.ndarray]]:
     images = np.zeros((n, 1, config.image_size, config.image_size), dtype=np.float32)
     all_boxes: List[np.ndarray] = []
     for i in range(n):
@@ -52,7 +55,9 @@ def _render_boxes(config: DetectionConfig, rng: np.random.Generator, n: int) -> 
     return images, all_boxes
 
 
-def build_detection_dataset(name: str, config: DetectionConfig, seed: int) -> Dict[str, Dataset]:
+def build_detection_dataset(
+    name: str, config: DetectionConfig, seed: int
+) -> Dict[str, Dataset]:
     rng = np.random.default_rng(seed)
     train_images, train_boxes = _render_boxes(config, rng, config.train_size)
     val_images, val_boxes = _render_boxes(config, rng, config.val_size)

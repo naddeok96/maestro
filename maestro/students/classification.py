@@ -1,4 +1,5 @@
 """Simple classification student."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,7 +26,9 @@ class ClassificationStudent(nn.Module):
             nn.ReLU(),
             nn.Linear(32, self.num_classes),
         )
-        self._optimizer: torch.optim.Optimizer = torch.optim.SGD(self.parameters(), lr=1e-3)
+        self._optimizer: torch.optim.Optimizer = torch.optim.SGD(
+            self.parameters(), lr=1e-3
+        )
         self.loss_fn = nn.CrossEntropyLoss()
 
     @property
@@ -43,7 +46,9 @@ class ClassificationStudent(nn.Module):
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.net(inputs)
 
-    def step_on_minibatch(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> Dict[str, float]:
+    def step_on_minibatch(
+        self, batch: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Dict[str, float]:
         self.train()
         inputs, targets = batch
         inputs = inputs.to(self.device)
@@ -56,7 +61,12 @@ class ClassificationStudent(nn.Module):
         self._optimizer.step()
         preds = logits.argmax(dim=-1)
         acc = (preds == targets).float().mean().item()
-        return {"loss": loss.item(), "accuracy": acc, "grad_norm": float(grad_vec.norm().item()), "grad_vector": grad_vec}
+        return {
+            "loss": loss.item(),
+            "accuracy": acc,
+            "grad_norm": float(grad_vec.norm().item()),
+            "grad_vector": grad_vec,
+        }
 
     def eval_on_loader(self, loader: DataLoader) -> Dict[str, float]:
         self.eval()

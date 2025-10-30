@@ -1,4 +1,5 @@
 """Observation construction utilities."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -47,7 +48,11 @@ class ObservationBuilder:
                 sample_shape = (spec.metadata["sequence_length"],)
                 break
             if spec.task_type == "detection":
-                sample_shape = (1, spec.metadata["image_size"], spec.metadata["image_size"])
+                sample_shape = (
+                    1,
+                    spec.metadata["image_size"],
+                    spec.metadata["image_size"],
+                )
                 break
         if sample_shape is None:
             sample_shape = (1,)
@@ -62,12 +67,21 @@ class ObservationBuilder:
         weights = torch.cat(params)
         median = weights.median().item()
         deviation = torch.abs(weights - median)
-        thresh = torch.quantile(deviation, 0.75).item() if deviation.numel() > 0 else 0.0
+        thresh = (
+            torch.quantile(deviation, 0.75).item() if deviation.numel() > 0 else 0.0
+        )
         mask = (torch.abs(weights - median) < thresh + 1e-8).float()
         sparsity = float(mask.mean().item())
         skip_density = 0.0
         return np.array(
-            [log_param_count, log_flops, depth, median_log_width, sparsity, skip_density],
+            [
+                log_param_count,
+                log_flops,
+                depth,
+                median_log_width,
+                sparsity,
+                skip_density,
+            ],
             dtype=np.float32,
         )
 
@@ -124,7 +138,9 @@ class ObservationBuilder:
         # inside the policy to match the paper's \rho(mean(\phi(z))) aggregation.
         g_data = descriptors.mean(axis=0)
         g_model = self._model_features(student)
-        g_progress = self._progress_features(step_index, horizon, remaining_budget, segment)
+        g_progress = self._progress_features(
+            step_index, horizon, remaining_budget, segment
+        )
         return Observation(
             g_data=g_data.astype(np.float32),
             g_model=g_model.astype(np.float32),

@@ -1,4 +1,5 @@
 """Metrics utilities used across experiments."""
+
 from __future__ import annotations
 
 import math
@@ -29,6 +30,30 @@ def ece_5(logits: torch.Tensor, targets: torch.Tensor) -> float:
         acc = (predictions[mask] == targets[mask]).float().mean().item()
         conf = confidences[mask].mean().item()
         ece += mask.float().mean().item() * abs(acc - conf)
+    return float(ece)
+
+
+def binary_ece(probs: torch.Tensor, targets: torch.Tensor, bins: int = 5) -> float:
+    """Expected calibration error for Bernoulli predictions."""
+
+    if probs.numel() == 0:
+        return 0.0
+
+    edges = torch.linspace(0.0, 1.0, steps=bins + 1, device=probs.device)
+    ece = 0.0
+    total = probs.numel()
+    for idx in range(bins):
+        lower, upper = edges[idx], edges[idx + 1]
+        if idx == bins - 1:
+            mask = (probs >= lower) & (probs <= upper)
+        else:
+            mask = (probs >= lower) & (probs < upper)
+        count = mask.sum().item()
+        if count == 0:
+            continue
+        acc = targets[mask].float().mean().item()
+        conf = probs[mask].mean().item()
+        ece += (count / total) * abs(acc - conf)
     return float(ece)
 
 

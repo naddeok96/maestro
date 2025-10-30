@@ -1,4 +1,5 @@
 """PPO implementation tailored for the MAESTRO teacher."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ class PPOConfig:
     value_coef: float = 0.5
     max_grad_norm: float = 1.0
     cmdp_lambda_lr: float = 1e-3
+    cmdp_target_fraction: float = 0.8
 
 
 @dataclass
@@ -83,14 +85,18 @@ class RolloutBuffer:
         gae = torch.zeros(1, device=self.device)
         for step in reversed(range(len(self.steps))):
             non_terminal = 1.0 - dones[step]
-            delta = rewards[step] + gamma * values[step + 1] * non_terminal - values[step]
+            delta = (
+                rewards[step] + gamma * values[step + 1] * non_terminal - values[step]
+            )
             gae = delta + gamma * gae_lambda * non_terminal * gae
             advantages[step] = gae
         returns = advantages + values[:-1]
         self.advantages = advantages
         self.returns = returns
 
-    def iter_minibatches(self, batch_size: int, shuffle: bool = True) -> Iterable[List[int]]:
+    def iter_minibatches(
+        self, batch_size: int, shuffle: bool = True
+    ) -> Iterable[List[int]]:
         indices = torch.arange(len(self.steps), device=self.device)
         if shuffle and len(indices) > 0:
             indices = indices[torch.randperm(len(indices))]
@@ -111,7 +117,9 @@ class TeacherPolicy(nn.Module):
         rho_dim: int = 64,
     ) -> None:
         super().__init__()
-        self.encoder = DeepSetsEncoder(input_dim=descriptor_dim, phi_dim=phi_dim, rho_dim=rho_dim)
+        self.encoder = DeepSetsEncoder(
+            input_dim=descriptor_dim, phi_dim=phi_dim, rho_dim=rho_dim
+        )
         context_dim = rho_dim + descriptor_dim + g_model_dim + g_progress_dim
         self.policy_heads = PolicyHeads(
             descriptor_dim=phi_dim,
@@ -135,10 +143,18 @@ class TeacherPolicy(nn.Module):
     def _prepare_inputs(
         self, observation: Dict[str, np.ndarray], descriptors: np.ndarray
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        g_data = torch.as_tensor(observation["g_data"], dtype=torch.float32, device=self.device)
-        g_model = torch.as_tensor(observation["g_model"], dtype=torch.float32, device=self.device)
-        g_progress = torch.as_tensor(observation["g_progress"], dtype=torch.float32, device=self.device)
-        descriptors_tensor = torch.as_tensor(descriptors, dtype=torch.float32, device=self.device)
+        g_data = torch.as_tensor(
+            observation["g_data"], dtype=torch.float32, device=self.device
+        )
+        g_model = torch.as_tensor(
+            observation["g_model"], dtype=torch.float32, device=self.device
+        )
+        g_progress = torch.as_tensor(
+            observation["g_progress"], dtype=torch.float32, device=self.device
+        )
+        descriptors_tensor = torch.as_tensor(
+            descriptors, dtype=torch.float32, device=self.device
+        )
         summary, encoded = self.encoder(descriptors_tensor)
         context = torch.cat([summary, g_data, g_model, g_progress], dim=0)
         return g_data, g_model, g_progress, encoded, context
@@ -163,14 +179,18 @@ class TeacherPolicy(nn.Module):
         observation: Dict[str, np.ndarray],
         descriptors: np.ndarray,
         deterministic: bool = False,
-    ) -> tuple[Dict[str, np.ndarray], torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    ) -> tuple[
+        Dict[str, np.ndarray], torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]
+    ]:
         _, _, _, encoded, context = self._prepare_inputs(observation, descriptors)
         outputs = self.policy_heads(encoded, context)
         value = self.value_head(context).squeeze(-1)
 
         if deterministic:
             mixture = torch.softmax(outputs.mixture_logits, dim=-1)
-            eta = torch.tensor((self.eta_bounds[0] + self.eta_bounds[1]) * 0.5, device=self.device)
+            eta = torch.tensor(
+                (self.eta_bounds[0] + self.eta_bounds[1]) * 0.5, device=self.device
+            )
             usage = torch.tensor(0.5, device=self.device)
             action_np = {
                 "w": mixture.detach().cpu().numpy(),
@@ -192,7 +212,9 @@ class TeacherPolicy(nn.Module):
         eta_sample = eta_dist.rsample()
         usage_sample = usage_dist.rsample()
 
-        eta = torch.clamp(eta_sample, self.eta_bounds[0] + 1e-6, self.eta_bounds[1] - 1e-6)
+        eta = torch.clamp(
+            eta_sample, self.eta_bounds[0] + 1e-6, self.eta_bounds[1] - 1e-6
+        )
         usage = torch.clamp(usage_sample, 1e-6, 1.0 - 1e-6)
 
         log_prob = (
@@ -217,7 +239,9 @@ class TeacherPolicy(nn.Module):
 
     def evaluate_actions(
         self,
-        batch_observations: Sequence[Dict[str, np.ndarray]] | Sequence[Dict[str, torch.Tensor]],
+        batch_observations: (
+            Sequence[Dict[str, np.ndarray]] | Sequence[Dict[str, torch.Tensor]]
+        ),
         batch_descriptors: Sequence[np.ndarray] | Sequence[torch.Tensor],
         batch_actions: Dict[str, torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
@@ -274,7 +298,9 @@ class TeacherPolicy(nn.Module):
             "u_pred": torch.stack(u_preds),
         }
 
-    def value(self, observation: Dict[str, np.ndarray], descriptors: np.ndarray) -> torch.Tensor:
+    def value(
+        self, observation: Dict[str, np.ndarray], descriptors: np.ndarray
+    ) -> torch.Tensor:
         _, _, _, encoded, context = self._prepare_inputs(observation, descriptors)
         return self.value_head(context).squeeze(-1)
 
@@ -288,7 +314,9 @@ class PPOTeacher:
         self.optim = Adam(self.policy.parameters(), lr=config.learning_rate)
         self.lambda_cmdp = 0.0
 
-    def _to_tensor_obs(self, observation: Dict[str, np.ndarray]) -> Dict[str, torch.Tensor]:
+    def _to_tensor_obs(
+        self, observation: Dict[str, np.ndarray]
+    ) -> Dict[str, torch.Tensor]:
         return {
             key: torch.as_tensor(val, dtype=torch.float32, device=self.policy.device)
             for key, val in observation.items()
@@ -304,9 +332,13 @@ class PPOTeacher:
         episode_usage = 0.0
 
         for _ in range(horizon):
-            action_np, log_prob, value, action_info = self.policy.act(obs, descriptors, deterministic=False)
+            action_np, log_prob, value, action_info = self.policy.act(
+                obs, descriptors, deterministic=False
+            )
             torch_obs = self._to_tensor_obs(obs)
-            torch_desc = torch.as_tensor(descriptors, dtype=torch.float32, device=self.policy.device)
+            torch_desc = torch.as_tensor(
+                descriptors, dtype=torch.float32, device=self.policy.device
+            )
             next_obs, reward, terminated, truncated, info = env.step(action_np)
             cost = float(info.get("cost", 0.0))
             penalty = self.lambda_cmdp * cost
@@ -329,9 +361,17 @@ class PPOTeacher:
                     },
                     log_prob=log_prob.to(self.policy.device),
                     value=value.to(self.policy.device),
-                    reward=torch.tensor(reward_adj, dtype=torch.float32, device=self.policy.device),
-                    done=torch.tensor(float(terminated), dtype=torch.float32, device=self.policy.device),
-                    usage=torch.tensor(cost, dtype=torch.float32, device=self.policy.device),
+                    reward=torch.tensor(
+                        reward_adj, dtype=torch.float32, device=self.policy.device
+                    ),
+                    done=torch.tensor(
+                        float(terminated),
+                        dtype=torch.float32,
+                        device=self.policy.device,
+                    ),
+                    usage=torch.tensor(
+                        cost, dtype=torch.float32, device=self.policy.device
+                    ),
                 )
             )
 
@@ -346,17 +386,29 @@ class PPOTeacher:
         else:
             last_value = self.policy.value(obs, descriptors).detach().unsqueeze(0)
 
-        buffer.compute_returns_and_advantages(last_value.squeeze(0), self.config.gamma, self.config.gae_lambda)
+        buffer.compute_returns_and_advantages(
+            last_value.squeeze(0), self.config.gamma, self.config.gae_lambda
+        )
 
         if buffer.advantages is not None and buffer.advantages.numel() > 0:
             advantages = buffer.advantages
-            advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+            advantages = (advantages - advantages.mean()) / (
+                advantages.std(unbiased=False) + 1e-8
+            )
         else:
             advantages = torch.zeros(0, device=self.policy.device)
 
         # Prepare tensors for training
-        log_probs_old = torch.stack([step.log_prob for step in buffer.steps]) if buffer.steps else torch.zeros(0)
-        values_old = torch.stack([step.value for step in buffer.steps]) if buffer.steps else torch.zeros(0)
+        log_probs_old = (
+            torch.stack([step.log_prob for step in buffer.steps])
+            if buffer.steps
+            else torch.zeros(0)
+        )
+        values_old = (
+            torch.stack([step.value for step in buffer.steps])
+            if buffer.steps
+            else torch.zeros(0)
+        )
 
         for _ in range(self.config.epochs):
             for batch_indices in buffer.iter_minibatches(self.config.minibatch_size):
@@ -365,15 +417,21 @@ class PPOTeacher:
                 obs_batch = [buffer.steps[i].observation for i in batch_indices]
                 desc_batch = [buffer.steps[i].descriptors for i in batch_indices]
                 actions_batch = {
-                    key: torch.stack([buffer.steps[i].action[key] for i in batch_indices])
+                    key: torch.stack(
+                        [buffer.steps[i].action[key] for i in batch_indices]
+                    )
                     for key in ("w", "eta", "u", "eta_sample", "u_sample")
                 }
-                old_logp = torch.stack([buffer.steps[i].log_prob for i in batch_indices])
+                old_logp = torch.stack(
+                    [buffer.steps[i].log_prob for i in batch_indices]
+                )
                 old_values = torch.stack([buffer.steps[i].value for i in batch_indices])
                 adv_batch = advantages[batch_indices]
                 returns_batch = buffer.returns[batch_indices]
 
-                eval_results = self.policy.evaluate_actions(obs_batch, desc_batch, actions_batch)
+                eval_results = self.policy.evaluate_actions(
+                    obs_batch, desc_batch, actions_batch
+                )
                 logp = eval_results["log_prob"]
                 values_pred = eval_results["values"]
                 entropy_mix = eval_results["entropy_mix"]
@@ -381,35 +439,53 @@ class PPOTeacher:
                 entropy_u = eval_results["entropy_u"]
 
                 ratio = torch.exp(logp - old_logp)
-                clipped_ratio = torch.clamp(ratio, 1.0 - self.config.clip_ratio, 1.0 + self.config.clip_ratio)
-                policy_loss = -torch.min(ratio * adv_batch, clipped_ratio * adv_batch).mean()
+                clipped_ratio = torch.clamp(
+                    ratio, 1.0 - self.config.clip_ratio, 1.0 + self.config.clip_ratio
+                )
+                policy_loss = -torch.min(
+                    ratio * adv_batch, clipped_ratio * adv_batch
+                ).mean()
 
                 value_loss = F.mse_loss(values_pred, returns_batch)
 
                 entropy_term = (
                     self.config.entropy_coef_mix * entropy_mix.mean()
-                    + self.config.entropy_coef_u * (entropy_eta.mean() + entropy_u.mean())
+                    + self.config.entropy_coef_u
+                    * (entropy_eta.mean() + entropy_u.mean())
                 )
 
                 eta_vals = actions_batch["eta"]
                 u_vals = actions_batch["u"]
                 eta_min, eta_max = self.policy.eta_bounds
-                barrier_eta = -torch.log(eta_vals - eta_min + 1e-6) - torch.log(eta_max - eta_vals + 1e-6)
+                barrier_eta = -torch.log(eta_vals - eta_min + 1e-6) - torch.log(
+                    eta_max - eta_vals + 1e-6
+                )
                 barrier_u = -torch.log(u_vals + 1e-6) - torch.log(1.0 - u_vals + 1e-6)
                 barrier = (
                     self.config.barrier_kappa * barrier_eta.mean()
                     + self.config.barrier_kappa_prime * barrier_u.mean()
                 )
 
-                loss = policy_loss + self.config.value_coef * value_loss - entropy_term + barrier
+                loss = (
+                    policy_loss
+                    + self.config.value_coef * value_loss
+                    - entropy_term
+                    + barrier
+                )
 
                 self.optim.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.max_grad_norm)
+                nn.utils.clip_grad_norm_(
+                    self.policy.parameters(), self.config.max_grad_norm
+                )
                 self.optim.step()
 
         initial_budget = float(env.config.initial_budget)
-        self.lambda_cmdp = max(0.0, self.lambda_cmdp + self.config.cmdp_lambda_lr * (episode_usage - initial_budget))
+        target = self.config.cmdp_target_fraction * initial_budget
+        self.lambda_cmdp = max(
+            0.0,
+            self.lambda_cmdp + self.config.cmdp_lambda_lr * (episode_usage - target),
+        )
 
         avg_eta = (
             torch.stack([step.action["eta"] for step in buffer.steps]).mean().item()

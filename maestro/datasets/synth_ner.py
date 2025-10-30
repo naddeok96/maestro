@@ -1,4 +1,5 @@
 """Synthetic sequence labelling datasets."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -32,7 +33,9 @@ class NERConfig:
     sequence_length: int = 16
 
 
-def _generate_sequences(config: NERConfig, rng: np.random.Generator, n: int) -> Tuple[np.ndarray, np.ndarray]:
+def _generate_sequences(
+    config: NERConfig, rng: np.random.Generator, n: int
+) -> Tuple[np.ndarray, np.ndarray]:
     tokens = rng.integers(0, config.vocab_size, size=(n, config.sequence_length))
     tags = rng.integers(0, config.num_tags, size=(n, config.sequence_length))
     span_len = max(1, config.sequence_length // 4)

@@ -14,7 +14,9 @@ def test_mixture_invariance_under_permutation():
     summary, encoded = encoder(descriptors)
     rest = torch.randn(25)
     global_context = torch.cat([summary, rest], dim=0)
-    policy_heads = PolicyHeads(descriptor_dim=encoded.size(1), context_dim=global_context.size(0))
+    policy_heads = PolicyHeads(
+        descriptor_dim=encoded.size(1), context_dim=global_context.size(0)
+    )
     outputs = policy_heads(encoded, global_context)
     mixture = torch.softmax(outputs.mixture_logits, dim=-1)
 

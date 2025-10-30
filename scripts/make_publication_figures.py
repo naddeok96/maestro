@@ -40,7 +40,9 @@ def main() -> None:
     plt.close()
 
     last = df.sort_values("episode").groupby("run_dir").tail(1)
-    table = last[["run_dir", "return", "macro_accuracy", "avg_eta", "avg_u", "avg_usage"]]
+    table = last[
+        ["run_dir", "return", "macro_accuracy", "avg_eta", "avg_u", "avg_usage"]
+    ]
     table_path = args.root / "table1_main_results.csv"
     table.to_csv(table_path, index=False)
 

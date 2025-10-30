@@ -1,4 +1,5 @@
 """Toy detection student."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,7 +28,9 @@ class DetectionStudent(nn.Module):
             nn.AdaptiveAvgPool2d(1),
         )
         self.head = nn.Linear(16, self.max_predictions * 5)
-        self._optimizer: torch.optim.Optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        self._optimizer: torch.optim.Optimizer = torch.optim.Adam(
+            self.parameters(), lr=1e-3
+        )
         self.bce = nn.BCEWithLogitsLoss()
         self.l1 = nn.SmoothL1Loss()
 
@@ -47,7 +50,9 @@ class DetectionStudent(nn.Module):
         logits = self.head(features.view(features.size(0), -1))
         return logits.view(images.size(0), self.max_predictions, 5)
 
-    def step_on_minibatch(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> Dict[str, float]:
+    def step_on_minibatch(
+        self, batch: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Dict[str, float]:
         images, targets = batch
         images = images.to(self.device)
         target_boxes = [t.to(self.device) for t in targets]
@@ -66,9 +71,15 @@ class DetectionStudent(nn.Module):
         loss.backward()
         grad_vec = flatten_gradients(list(self.parameters())).detach().cpu()
         self._optimizer.step()
-        return {"loss": float(loss.item()), "grad_norm": float(grad_vec.norm().item()), "grad_vector": grad_vec}
+        return {
+            "loss": float(loss.item()),
+            "grad_norm": float(grad_vec.norm().item()),
+            "grad_vector": grad_vec,
+        }
 
-    def _predict_boxes(self, images: torch.Tensor) -> List[List[Tuple[float, torch.Tensor]]]:
+    def _predict_boxes(
+        self, images: torch.Tensor
+    ) -> List[List[Tuple[float, torch.Tensor]]]:
         pred = self.forward(images)
         scores = torch.sigmoid(pred[..., 0])
         boxes = pred[..., 1:]

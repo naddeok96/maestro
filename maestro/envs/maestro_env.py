@@ -1,4 +1,5 @@
 """Gymnasium environment for MAESTRO."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -55,7 +56,9 @@ class MaestroEnv(gym.Env):
             seed=config.seed,
             device=self.device,
         )
-        self.observation_builder = ObservationBuilder(config.datasets, float(config.initial_budget))
+        self.observation_builder = ObservationBuilder(
+            config.datasets, float(config.initial_budget)
+        )
         self.current_step = 0
         self.previous_macro = 0.0
         self.last_observation: Optional[Observation] = None
@@ -63,22 +66,37 @@ class MaestroEnv(gym.Env):
         obs_dim = 8
         self.observation_space = spaces.Dict(
             {
-                "g_data": spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32),
-                "g_model": spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32),
-                "g_progress": spaces.Box(low=-np.inf, high=np.inf, shape=(11,), dtype=np.float32),
+                "g_data": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
+                ),
+                "g_model": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32
+                ),
+                "g_progress": spaces.Box(
+                    low=-np.inf, high=np.inf, shape=(11,), dtype=np.float32
+                ),
             }
         )
         self.action_space = spaces.Dict(
             {
-                "w": spaces.Box(low=0.0, high=1.0, shape=(len(self.datasets),), dtype=np.float32),
-                "eta": spaces.Box(low=config.eta_min, high=config.eta_max, shape=(1,), dtype=np.float32),
+                "w": spaces.Box(
+                    low=0.0, high=1.0, shape=(len(self.datasets),), dtype=np.float32
+                ),
+                "eta": spaces.Box(
+                    low=config.eta_min,
+                    high=config.eta_max,
+                    shape=(1,),
+                    dtype=np.float32,
+                ),
                 "u": spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32),
             }
         )
 
     def _initial_observation(self) -> Observation:
         dummy_output = SegmentOutput(
-            dataset_metrics={spec.name: {"accuracy": 0.0, "loss": 0.0} for spec in self.datasets},
+            dataset_metrics={
+                spec.name: {"accuracy": 0.0, "loss": 0.0} for spec in self.datasets
+            },
             macro_accuracy=0.0,
             train_loss=0.0,
             val_loss=0.0,
@@ -145,7 +163,9 @@ class MaestroEnv(gym.Env):
         available_examples = int(self.budget.remaining)
         usage_examples = int(usage_fraction * available_examples)
         desired_batches = (
-            int(np.ceil(usage_examples / self.config.batch_size)) if usage_examples > 0 else 0
+            int(np.ceil(usage_examples / self.config.batch_size))
+            if usage_examples > 0
+            else 0
         )
         # hard cap by what's left in the budget; zero batches allowed when insufficient budget
         max_batches = int(available_examples // self.config.batch_size)
@@ -195,5 +215,11 @@ class MaestroEnv(gym.Env):
     def render(self):
         if self.last_observation is None:
             return ""
-        metrics = [f"{name}: {acc:.2f}" for name, acc in zip(self.last_observation.dataset_names, self.last_observation.descriptors[:, 0])]
+        metrics = [
+            f"{name}: {acc:.2f}"
+            for name, acc in zip(
+                self.last_observation.dataset_names,
+                self.last_observation.descriptors[:, 0],
+            )
+        ]
         return " | ".join(metrics)
