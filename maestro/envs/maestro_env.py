@@ -137,8 +137,13 @@ class MaestroEnv(gym.Env):
         eta = float(np.clip(action["eta"][0], self.config.eta_min, self.config.eta_max))
         usage_fraction = float(np.clip(action["u"][0], 0.0, 1.0))
         available_examples = self.budget.remaining
-        usage_examples = int(np.floor(usage_fraction * available_examples))
-        batches = max(1, int(np.ceil(usage_examples / self.config.batch_size)))
+        usage_examples = float(usage_fraction * available_examples)
+        desired_batches = (
+            int(np.ceil(usage_examples / self.config.batch_size)) if usage_examples > 0 else 1
+        )
+        # hard cap by what's left in the budget (still ensure at least 1 batch if budget>0)
+        max_batches = max(1, int(np.ceil(available_examples / self.config.batch_size)))
+        batches = max(1, min(desired_batches, max_batches))
         settings = OptimizerSettings(
             learning_rate=eta,
             weight_decay=self.config.weight_decay,
