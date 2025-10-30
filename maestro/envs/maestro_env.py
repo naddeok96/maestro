@@ -162,7 +162,9 @@ class MaestroEnv(gym.Env):
         )
         reward = segment.macro_accuracy - self.previous_macro
         self.previous_macro = segment.macro_accuracy
-        terminated = self.current_step >= self.config.horizon or self.budget.is_depleted
+        no_batches_left = max_batches == 0
+        terminated = self.budget.is_depleted
+        truncated = (self.current_step >= self.config.horizon) or no_batches_left
         self.last_observation = observation
         info = {
             "macro_accuracy": segment.macro_accuracy,
@@ -170,7 +172,7 @@ class MaestroEnv(gym.Env):
             "usage": segment.usage,
             "cost": segment.usage,
         }
-        return self._to_gym_obs(observation), reward, terminated, False, info
+        return self._to_gym_obs(observation), reward, terminated, truncated, info
 
     def _to_gym_obs(self, observation: Observation) -> Dict[str, np.ndarray]:
         return {

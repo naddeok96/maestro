@@ -92,11 +92,13 @@ class PPOTeacher:
         obs, _ = env.reset()
         descriptors = env.last_per_dataset_descriptors
         ep_reward = 0.0
+        last_macro_accuracy = 0.0
         for _ in range(horizon):
             action, _, _ = self.policy.act(obs, descriptors)
             obs, reward, done, _, info = env.step(action)
             descriptors = env.last_per_dataset_descriptors
             ep_reward += reward
+            last_macro_accuracy = float(info.get("macro_accuracy", last_macro_accuracy))
             if done:
                 break
-        return {"return": ep_reward}
+        return {"return": ep_reward, "macro_accuracy": last_macro_accuracy}
