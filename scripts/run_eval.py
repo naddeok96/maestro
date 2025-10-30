@@ -3,24 +3,17 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any, Dict
-
-import yaml
+from typing import Any, Dict, Iterable
 
 from maestro.datasets import build_from_config
 from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
 from maestro.policy.ppo import TeacherPolicy
 from maestro.utils.serialization import load_checkpoint
+from maestro.utils.config import load_config
 
-from .run_meta_train import load_config
 
-
-def build_env_from_tasks(config: Dict[str, Any], task_list) -> MaestroEnv:
-    datasets = []
-    seed = config.get("seed", 0)
-    for task_cfg in task_list:
-        datasets.extend(build_from_config(task_cfg, seed))
-        seed += 11
+def build_env_from_task(config: Dict[str, Any], task_cfg: str, seed: int) -> MaestroEnv:
+    datasets = build_from_config(task_cfg, seed)
     env_config = MaestroEnvConfig(
         datasets=datasets,
         horizon=config["horizon"],
@@ -34,7 +27,7 @@ def build_env_from_tasks(config: Dict[str, Any], task_list) -> MaestroEnv:
         eta_max=config["optimizer"]["eta_max"],
         weight_decay=config["optimizer"]["weight_decay"],
         momentum=config["optimizer"]["momentum"],
-        seed=config.get("seed", 0),
+        seed=seed,
     )
     return MaestroEnv(env_config)
 
@@ -46,19 +39,32 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    env = build_env_from_tasks(config, config.get("eval_tasks", config["tasks"]))
     policy = TeacherPolicy(
         descriptor_dim=8,
         g_model_dim=6,
         g_progress_dim=11,
         eta_bounds=(config["optimizer"]["eta_min"], config["optimizer"]["eta_max"]),
     )
+    if args.checkpoint is not None:
+        state = load_checkpoint(args.checkpoint)
+        policy.load_state_dict(state.get("policy", state))
 
-    obs, _ = env.reset()
-    descriptors = env.last_per_dataset_descriptors
-    action, _, _ = policy.act(obs, descriptors)
-    obs, reward, done, _, info = env.step(action)
-    print({"macro_accuracy": info.get("macro_accuracy", 0.0), "return": reward})
+    task_list: Iterable[str] = config.get("eval_tasks", config["tasks"])
+    base_seed = config.get("seed", 0)
+    results = {}
+    for index, task_cfg in enumerate(task_list):
+        env_seed = base_seed + index * 17
+        env = build_env_from_task(config, task_cfg, env_seed)
+        obs, _ = env.reset()
+        descriptors = env.last_per_dataset_descriptors
+        action, _, _ = policy.act(obs, descriptors)
+        obs, reward, done, _, info = env.step(action)
+        results[Path(task_cfg).stem] = {
+            "macro_accuracy": info.get("macro_accuracy", 0.0),
+            "return": reward,
+        }
+        env.close()
+    print(results)
 
 
 if __name__ == "__main__":

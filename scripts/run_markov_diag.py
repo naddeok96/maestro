@@ -3,24 +3,17 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any, Dict, List
-
-import yaml
+from typing import Any, Dict, Iterable, List
 
 from maestro.datasets import build_from_config
 from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
 from maestro.eval.markov_diag import Transition, compute_markov_diagnostics
 from maestro.policy.ppo import TeacherPolicy
+from maestro.utils.config import load_config
 
-from .run_meta_train import load_config
 
-
-def build_env(config: Dict[str, Any]) -> MaestroEnv:
-    datasets = []
-    seed = config.get("seed", 0)
-    for task_cfg in config["tasks"]:
-        datasets.extend(build_from_config(task_cfg, seed))
-        seed += 9
+def build_env(config: Dict[str, Any], task_cfg: str, seed: int) -> MaestroEnv:
+    datasets = build_from_config(task_cfg, seed)
     env_config = MaestroEnvConfig(
         datasets=datasets,
         horizon=config["horizon"],
@@ -34,7 +27,7 @@ def build_env(config: Dict[str, Any]) -> MaestroEnv:
         eta_max=config["optimizer"]["eta_max"],
         weight_decay=config["optimizer"]["weight_decay"],
         momentum=config["optimizer"]["momentum"],
-        seed=config.get("seed", 0),
+        seed=seed,
     )
     return MaestroEnv(env_config)
 
@@ -45,7 +38,6 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    env = build_env(config)
     policy = TeacherPolicy(
         descriptor_dim=8,
         g_model_dim=6,
@@ -53,19 +45,26 @@ def main() -> None:
         eta_bounds=(config["optimizer"]["eta_min"], config["optimizer"]["eta_max"]),
     )
 
-    transitions: List[Transition] = []
-    obs, _ = env.reset()
-    descriptors = env.last_per_dataset_descriptors
-    for _ in range(config["horizon"]):
-        action, _, _ = policy.act(obs, descriptors)
-        next_obs, reward, done, _, _ = env.step(action)
-        transitions.append(Transition(state=obs, action=action, next_state=next_obs))
-        obs = next_obs
+    diagnostics_per_task: Dict[str, Dict[str, float]] = {}
+    task_list: Iterable[str] = config.get("eval_tasks", config["tasks"])
+    base_seed = config.get("seed", 0)
+    for index, task_cfg in enumerate(task_list):
+        env_seed = base_seed + index * 19
+        env = build_env(config, task_cfg, env_seed)
+        transitions: List[Transition] = []
+        obs, _ = env.reset()
         descriptors = env.last_per_dataset_descriptors
-        if done:
-            break
-    diagnostics = compute_markov_diagnostics(transitions)
-    print(diagnostics)
+        for _ in range(config["horizon"]):
+            action, _, _ = policy.act(obs, descriptors)
+            next_obs, reward, done, _, _ = env.step(action)
+            transitions.append(Transition(state=obs, action=action, next_state=next_obs))
+            obs = next_obs
+            descriptors = env.last_per_dataset_descriptors
+            if done:
+                break
+        diagnostics_per_task[Path(task_cfg).stem] = compute_markov_diagnostics(transitions)
+        env.close()
+    print(diagnostics_per_task)
 
 
 if __name__ == "__main__":

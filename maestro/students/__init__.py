@@ -24,6 +24,8 @@ def build_student(dataset_specs: List[DatasetSpec]) -> AbstractStudent:
     if not dataset_specs:
         raise ValueError("No datasets provided")
     task = dataset_specs[0].task_type
+    if any(spec.task_type != task for spec in dataset_specs):
+        raise ValueError("All datasets must share the same task type")
     metadata = dataset_specs[0].metadata
     if task == "classification":
         return ClassificationStudent(

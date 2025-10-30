@@ -4,49 +4,18 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict, List
-
-import yaml
+from typing import Any, Dict
 
 from maestro.datasets import build_from_config
 from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
 from maestro.policy.ppo import PPOTeacher, PPOConfig, TeacherPolicy
 from maestro.utils import RunPaths
+from maestro.utils.config import load_config
 from maestro.utils.logging import MetricsLogger
 
 
-def _load_yaml(path: Path) -> Dict[str, Any]:
-    with path.open("r") as handle:
-        return yaml.safe_load(handle)
-
-
-def _merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-    result = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and key in result and isinstance(result[key], dict):
-            result[key] = _merge_dicts(result[key], value)
-        else:
-            result[key] = value
-    return result
-
-
-def load_config(path: Path) -> Dict[str, Any]:
-    cfg = _load_yaml(path)
-    if "defaults" in cfg:
-        merged: Dict[str, Any] = {}
-        for default in cfg.pop("defaults"):
-            default_path = (path.parent / default).resolve()
-            merged = _merge_dicts(merged, load_config(default_path))
-        cfg = _merge_dicts(merged, cfg)
-    return cfg
-
-
-def build_env(config: Dict[str, Any]) -> MaestroEnv:
-    datasets: List = []
-    seed = config.get("seed", 0)
-    for task_cfg in config["tasks"]:
-        datasets.extend(build_from_config(task_cfg, seed))
-        seed += 13
+def build_env_for_task(config: Dict[str, Any], task_cfg: str, seed: int) -> MaestroEnv:
+    datasets = build_from_config(task_cfg, seed)
     env_config = MaestroEnvConfig(
         datasets=datasets,
         horizon=config["horizon"],
@@ -60,7 +29,7 @@ def build_env(config: Dict[str, Any]) -> MaestroEnv:
         eta_max=config["optimizer"]["eta_max"],
         weight_decay=config["optimizer"]["weight_decay"],
         momentum=config["optimizer"]["momentum"],
-        seed=config.get("seed", 0),
+        seed=seed,
     )
     return MaestroEnv(env_config)
 
@@ -72,7 +41,6 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    env = build_env(config)
     policy = TeacherPolicy(
         descriptor_dim=8,
         g_model_dim=6,
@@ -88,10 +56,17 @@ def main() -> None:
         print(json.dumps({"status": "dry_run", "config": config}))
         return
 
+    tasks = config["tasks"]
+    base_seed = config.get("seed", 0)
     for episode in range(config["run"]["total_episodes"]):
+        task_cfg = tasks[episode % len(tasks)]
+        env_seed = base_seed + episode * 31
+        env = build_env_for_task(config, task_cfg, env_seed)
         stats = ppo.train_episode(env, config["horizon"])
         stats["episode"] = episode
+        stats["task"] = Path(task_cfg).stem
         logger.log_row(stats)
+        env.close()
     logger.flush_json()
 
 

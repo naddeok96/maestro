@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .run_meta_train import load_config
+from maestro.utils.config import load_config
 
 
 def main() -> None:
