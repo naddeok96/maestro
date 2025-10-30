@@ -104,7 +104,7 @@ class StudentRunner:
     ) -> SegmentOutput:
         mixture = np.array(mixture, dtype=np.float32)
         mixture = mixture / mixture.sum()
-        batches = max(1, usage_batches)
+        batches = max(0, usage_batches)
         self.student.configure_optimizer(settings)
 
         grad_accum = []

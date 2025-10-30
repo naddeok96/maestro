@@ -121,6 +121,7 @@ class MaestroEnv(gym.Env):
             device=self.device,
         )
         self.budget.reset()
+        self.observation_builder.reset()
         self.current_step = 0
         self.previous_macro = 0.0
         observation = self._initial_observation()
@@ -136,14 +137,14 @@ class MaestroEnv(gym.Env):
         mixture = mixture / mixture.sum()
         eta = float(np.clip(action["eta"][0], self.config.eta_min, self.config.eta_max))
         usage_fraction = float(np.clip(action["u"][0], 0.0, 1.0))
-        available_examples = self.budget.remaining
-        usage_examples = float(usage_fraction * available_examples)
+        available_examples = int(self.budget.remaining)
+        usage_examples = int(usage_fraction * available_examples)
         desired_batches = (
-            int(np.ceil(usage_examples / self.config.batch_size)) if usage_examples > 0 else 1
+            int(np.ceil(usage_examples / self.config.batch_size)) if usage_examples > 0 else 0
         )
-        # hard cap by what's left in the budget (still ensure at least 1 batch if budget>0)
-        max_batches = max(1, int(np.ceil(available_examples / self.config.batch_size)))
-        batches = max(1, min(desired_batches, max_batches))
+        # hard cap by what's left in the budget; zero batches allowed when insufficient budget
+        max_batches = int(available_examples // self.config.batch_size)
+        batches = min(desired_batches, max_batches)
         settings = OptimizerSettings(
             learning_rate=eta,
             weight_decay=self.config.weight_decay,

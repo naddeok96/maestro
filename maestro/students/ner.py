@@ -78,13 +78,13 @@ class NERStudent(nn.Module):
                 tokens = tokens.to(self.device)
                 tags = tags.to(self.device)
                 logits = self.forward(tokens)
-                loss = self.loss_fn(logits.view(-1, self.num_tags), tags.view(-1)).mean()
-                total_loss += loss.item() * tokens.size(0)
-                total_tokens += tokens.numel()
+                per_token_loss = self.loss_fn(logits.view(-1, self.num_tags), tags.view(-1))
+                total_loss += per_token_loss.sum().item()
+                total_tokens += tags.numel()
                 total_correct += (logits.argmax(dim=-1) == tags).sum().item()
         if total_tokens == 0:
             return {"loss": 0.0, "accuracy": 0.0}
-        return {"loss": total_loss / loader.dataset.__len__(), "accuracy": total_correct / total_tokens}
+        return {"loss": total_loss / total_tokens, "accuracy": total_correct / total_tokens}
 
     def feature_embed(self, batch: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         tokens, _ = batch

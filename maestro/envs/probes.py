@@ -28,15 +28,23 @@ class ProbeManager:
             spec.name: [RobustScalarNormalizer() for _ in range(8)] for spec in self.datasets
         }
         self.probe_loaders = {
-            spec.name: DataLoader(spec.probe, batch_size=self.probe_size)
+            spec.name: DataLoader(spec.probe, batch_size=self.probe_size, shuffle=True)
             for spec in self.datasets
         }
+        self._iters = {name: iter(loader) for name, loader in self.probe_loaders.items()}
+
+    def _next_probe_batch(self, name: str):
+        try:
+            return next(self._iters[name])
+        except StopIteration:
+            self._iters[name] = iter(self.probe_loaders[name])
+            return next(self._iters[name])
 
     def compute_descriptors(self, prev_grad: torch.Tensor, grad_ema: torch.Tensor) -> Dict[str, torch.Tensor]:
         descriptors: Dict[str, torch.Tensor] = {}
         param_list = list(self.student.parameters())
         for spec in self.datasets:
-            batch = next(iter(self.probe_loaders[spec.name]))
+            batch = self._next_probe_batch(spec.name)
             if spec.task_type == "classification":
                 inputs, targets = batch
                 inputs = inputs.to(self.device)
