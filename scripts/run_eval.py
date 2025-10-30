@@ -36,6 +36,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate a trained teacher")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, default=None)
+    parser.add_argument("--steps", type=int, default=1)
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -57,11 +58,18 @@ def main() -> None:
         env = build_env_from_task(config, task_cfg, env_seed)
         obs, _ = env.reset()
         descriptors = env.last_per_dataset_descriptors
-        action, _, _ = policy.act(obs, descriptors)
-        obs, reward, done, _, info = env.step(action)
+        total_reward = 0.0
+        info = {}
+        for _ in range(args.steps):
+            action, _, _ = policy.act(obs, descriptors)
+            obs, reward, done, _, info = env.step(action)
+            descriptors = env.last_per_dataset_descriptors
+            total_reward += reward
+            if done:
+                break
         results[Path(task_cfg).stem] = {
             "macro_accuracy": info.get("macro_accuracy", 0.0),
-            "return": reward,
+            "return": total_reward,
         }
         env.close()
     print(results)

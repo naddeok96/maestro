@@ -73,8 +73,10 @@ maestro/
 
 The environment outputs grouped observations with the following components:
 
-* `g_data` -- DeepSets summary of the per-dataset descriptors `z_{t,i}` which
-  include NLL moments, uncertainty, gradient agreement, diversity, and size.
+* `g_data` -- Mean of the per-dataset descriptors `z_{t,i}` (NLL moments,
+  uncertainty, gradient agreement, diversity, size). The DeepSets summary
+  ρ(mean(φ(·))) is computed inside the policy and concatenated with `g_model`
+  and `g_progress` to form the policy context.
 * `g_model` -- Model-complexity statistics such as log parameter count and
   effective depth.
 * `g_progress` -- Training-progress indicators such as remaining budget,
