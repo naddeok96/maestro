@@ -18,7 +18,7 @@ from maestro.baselines import create_scheduler
 from maestro.policy import MaestroPolicy, MaestroPolicyConfig
 from maestro.probes import DummyYOLO, build_model, estimate_probes_with_val
 from maestro.utils.wandb import init_wandb_run, log_checkpoint, log_metrics
-from maestro.yolo.mix_builder import SourceDS, build_mixed_segment
+from maestro.yolo.mix_builder import SourceDS, build_mixed_segment, build_mixed_val
 
 
 VOC_CANONICAL_NAMES = [
@@ -296,6 +296,20 @@ def main() -> None:
                 donor_lists.append(list(donor_names))
 
     donor_big_names: Optional[List[List[str]]] = donor_lists or None
+    for donor in donor_names_in_mix:
+        if donor not in datasets and donor in DEFAULT_DATASETS:
+            cfg = DEFAULT_DATASETS[donor]
+            donor_yaml = Path(str(cfg.get("yaml")))
+            fallback_raw = cfg.get("fallback_names", [])
+            if isinstance(fallback_raw, Sequence) and not isinstance(fallback_raw, (str, bytes)):
+                fallback_seq = [str(item) for item in fallback_raw]
+            else:
+                fallback_seq = []
+            datasets[donor] = {
+                "yaml": str(donor_yaml),
+                "fallback_names": fallback_seq,
+            }
+            datasets[donor]["names"] = _load_names_from_yaml(donor_yaml, fallback_seq)
     date_dir = args.output_root / f"publication_{args.date_tag}"
     run_dir = date_dir / "yolo_track"
     log_dir = run_dir / "logs"
@@ -441,6 +455,9 @@ def main() -> None:
                 label_space_mode=args.label_space,
                 rng_seed=segment,
             )
+
+            # build a small balanced val split for the mix (2% of train; >=25 per source if possible)
+            build_mixed_val(mix_dir, fraction=0.02, min_per_source=25)
 
             manifest_lines = [
                 line.strip()

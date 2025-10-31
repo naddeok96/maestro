@@ -114,6 +114,10 @@ def build_mixed_segment(
         k = min(counts.get(source.name, 0), len(pool))
         if k <= 0:
             continue
+        if k < counts.get(source.name, 0):
+            print(
+                f"[mix] truncating '{source.name}' from {counts.get(source.name, 0)} to {k} due to pool size={len(pool)}"
+            )
         chosen.extend((source.name, img, lbl) for img, lbl in random.sample(pool, k))
 
     random.shuffle(chosen)
@@ -149,3 +153,89 @@ def build_mixed_segment(
     (mix_dir / "yolo_mix.yaml").write_text("\n".join(yaml_lines), encoding="utf-8")
 
     return mix_dir, canonical
+
+
+def build_mixed_val(
+    mix_dir: Path,
+    fraction: float = 0.02,
+    min_per_source: int = 25,
+) -> Path:
+    """
+    Create a balanced val.txt for the mixed dataset at `mix_dir`.
+    - Reads images from mix_dir/images/train/<source_name>/*.*
+    - Proportionally samples ~`fraction` of train, ensuring at least `min_per_source`
+      per present source if feasible.
+    - Writes mix_dir/val.txt and updates yolo_mix.yaml to point to it.
+
+    Returns:
+        Path to the written val.txt
+    """
+
+    train_list = (mix_dir / "train.txt").read_text(encoding="utf-8").splitlines()
+    train_list = [p.strip() for p in train_list if p.strip()]
+    if not train_list:
+        # nothing to do; keep val pointing to train.txt
+        return mix_dir / "train.txt"
+
+    # group by source name (first directory under images/train/)
+    # expected: .../mix_seg_XXX/images/train/<source>/<filename>
+    from collections import defaultdict
+    import random
+
+    by_source: dict[str, list[str]] = defaultdict(list)
+    root_images = (mix_dir / "images" / "train").resolve()
+    for abs_path in train_list:
+        try:
+            rel = Path(abs_path).resolve().relative_to(root_images)
+        except Exception:
+            rel = Path(abs_path).name
+            by_source["_unknown"].append(abs_path)
+            continue
+        src = rel.parts[0] if len(rel.parts) >= 2 else "_unknown"
+        by_source[src].append(abs_path)
+
+    total_val = max(1, int(round(len(train_list) * fraction)))
+    sizes = {src: len(lst) for src, lst in by_source.items()}
+    total_train = sum(sizes.values()) or 1
+    alloc = {src: int((sizes[src] / total_train) * total_val) for src in sizes}
+    for src in sizes:
+        if sizes[src] > 0:
+            alloc[src] = max(alloc[src], min(min_per_source, sizes[src]))
+    diff = total_val - sum(alloc.values())
+    if diff > 0:
+        for src in sorted(sizes, key=lambda s: -sizes[s]):
+            take = min(diff, max(0, sizes[src] - alloc[src]))
+            alloc[src] += take
+            diff -= take
+            if diff == 0:
+                break
+    elif diff < 0:
+        for src in sorted(alloc, key=lambda s: -alloc[s]):
+            cut = min(-diff, max(0, alloc[src] - 1))
+            alloc[src] -= cut
+            diff += cut
+            if diff == 0:
+                break
+
+    random.seed(hash((str(mix_dir), total_val)) & 0xFFFF)
+    val_paths: list[str] = []
+    for src, lst in by_source.items():
+        k = min(alloc.get(src, 0), len(lst))
+        if k > 0:
+            val_paths.extend(random.sample(lst, k))
+
+    val_txt = mix_dir / "val.txt"
+    val_txt.write_text("\n".join(val_paths), encoding="utf-8")
+
+    yml = mix_dir / "yolo_mix.yaml"
+    if yml.exists():
+        lines = yml.read_text(encoding="utf-8").splitlines()
+        new_lines = []
+        for line in lines:
+            if line.strip().startswith("val:"):
+                new_lines.append(f"val: {val_txt.as_posix()}")
+            else:
+                new_lines.append(line)
+        yml.write_text("\n".join(new_lines), encoding="utf-8")
+
+    return val_txt
