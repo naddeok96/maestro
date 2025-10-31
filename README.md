@@ -109,10 +109,14 @@ through pre-commit hooks defined in `.pre-commit-config.yaml`.
 * Deterministic seeds and frozen random projections are used for probe
   gradients and dataset sampling.  Running the same configuration twice will
   produce identical metrics.
-* All experiment scripts emit TensorBoard logs, CSV metrics, checkpoints, and
-  JSON diagnostics under `outputs/<run_id>/`.
+* All experiment scripts emit CSV metrics and JSON diagnostics under
+  `outputs/<run_id>/`, and log metrics/checkpoints to Weights & Biases (W&B) if
+  available.
 * FLOPs estimation gracefully falls back to timing-based proxies when external
   libraries (ptflops/fvcore) are unavailable, ensuring portability.
+
+To log runs online, set `WANDB_API_KEY` and optionally `WANDB_PROJECT`.
+Otherwise runs default to offline logging (or disabled mode in CI).
 
 For a more detailed overview of the grouped observation design, CMDP handling,
 metrics, and supported students/datasets please refer to the inline module
