@@ -204,11 +204,20 @@ def coco_to_yolo(
     labels_dir.mkdir(parents=True, exist_ok=True)
     data = json.loads(json_path.read_text())
 
-    # Build image metadata by id
+    # Build image metadata by id (LVIS may miss "file_name"; derive from coco_url/id)
+    from pathlib import Path
     img_by_id = {}
     for im in data.get("images", []):
+        fn = im.get("file_name")
+        if not fn:
+            cu = im.get("coco_url", "")
+            if cu:
+                fn = Path(cu).name  # e.g., .../train2017/000000123456.jpg
+            else:
+                # last-resort deterministic name from image id (COCO pattern)
+                fn = f"{int(im['id']):012d}.jpg"
         img_by_id[im["id"]] = {
-            "file_name": im["file_name"],
+            "file_name": fn,
             "width": im.get("width"),
             "height": im.get("height"),
         }
