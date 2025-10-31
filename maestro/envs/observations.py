@@ -24,9 +24,15 @@ class Observation:
 
 
 class ObservationBuilder:
-    def __init__(self, datasets: List[DatasetSpec], total_budget: float) -> None:
+    def __init__(
+        self,
+        datasets: List[DatasetSpec],
+        total_budget: float,
+        ablations: Dict[str, bool] | None = None,
+    ) -> None:
         self.datasets = datasets
         self.total_budget = total_budget
+        self.ablations = ablations or {}
         self.reset()
 
     def reset(self) -> None:
@@ -141,6 +147,15 @@ class ObservationBuilder:
         g_progress = self._progress_features(
             step_index, horizon, remaining_budget, segment
         )
+        if self.ablations.get("drop_grad_cosine", False):
+            if g_progress.size >= 10:
+                g_progress[9] = 0.0
+        if self.ablations.get("drop_progress_block", False):
+            g_progress = np.zeros_like(g_progress)
+        if self.ablations.get("drop_model_block", False):
+            g_model = np.zeros_like(g_model)
+        if self.ablations.get("drop_data_block", False):
+            g_data = np.zeros_like(g_data)
         return Observation(
             g_data=g_data.astype(np.float32),
             g_model=g_model.astype(np.float32),
