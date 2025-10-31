@@ -4,7 +4,7 @@ set -euo pipefail
 # ---------------------- Config toggles ----------------------
 DATA_DIR="${1:-$PWD/data}"
 MAKE_YOLO="${MAKE_YOLO:-true}"    # set to "false" to skip YOLO conversion
-USE_VOC="${USE_VOC:-true}"        # set to "false" to skip PASCAL VOC download
+USE_VOC="${USE_VOC:-false}"       # set to "true" to download PASCAL VOC
 # ------------------------------------------------------------
 
 mkdir -p "$DATA_DIR"
@@ -576,9 +576,7 @@ convert_voc_like_to_yolo() {
   local VAL_SPLIT="${4:-val}"
 
   SRC_ROOT="$SRC_ROOT" OUT_ROOT="$OUT_ROOT" TRAIN_SPLIT="$TRAIN_SPLIT" VAL_SPLIT="$VAL_SPLIT" python - <<'PY'
-import os
-import shutil
-import xml.etree.ElementTree as ET
+import os, shutil, xml.etree.ElementTree as ET
 from pathlib import Path
 
 src_root = Path(os.environ["SRC_ROOT"]).resolve()
@@ -590,18 +588,71 @@ jpeg = src_root / "JPEGImages"
 ann = src_root / "Annotations"
 sets = src_root / "ImageSets" / "Main"
 
+if src_root.name.lower() == "clipart1k":
+    NAMES = [
+        "aeroplane",
+        "bicycle",
+        "bird",
+        "boat",
+        "bottle",
+        "bus",
+        "car",
+        "cat",
+        "chair",
+        "cow",
+        "diningtable",
+        "dog",
+        "horse",
+        "motorbike",
+        "person",
+        "pottedplant",
+        "sheep",
+        "sofa",
+        "train",
+        "tvmonitor",
+    ]
+elif src_root.name.lower() == "watercolor2k":
+    NAMES = ["bicycle", "bird", "car", "cat", "dog", "person"]
+elif src_root.name.lower() == "comic2k":
+    NAMES = ["bicycle", "bird", "car", "cat", "dog", "person"]
+else:
+    NAMES = [
+        "aeroplane",
+        "bicycle",
+        "bird",
+        "boat",
+        "bottle",
+        "bus",
+        "car",
+        "cat",
+        "chair",
+        "cow",
+        "diningtable",
+        "dog",
+        "horse",
+        "motorbike",
+        "person",
+        "pottedplant",
+        "sheep",
+        "sofa",
+        "train",
+        "tvmonitor",
+    ]
+name_to_id = {name: idx for idx, name in enumerate(NAMES)}
+
+
 def read_ids(split_name: str) -> list[str]:
     txt = sets / f"{split_name}.txt"
     if txt.exists():
         return [line.strip() for line in txt.read_text().splitlines() if line.strip()]
     return [p.stem for p in jpeg.glob("*.jpg")]
 
+
 def convert(ids: list[str], split: str) -> None:
     img_out = out_root / "images" / split
     lbl_out = out_root / "labels" / split
     img_out.mkdir(parents=True, exist_ok=True)
     lbl_out.mkdir(parents=True, exist_ok=True)
-
     for sample_id in ids:
         img = jpeg / f"{sample_id}.jpg"
         if not img.exists():
@@ -612,6 +663,7 @@ def convert(ids: list[str], split: str) -> None:
                 continue
         xml = ann / f"{sample_id}.xml"
         if not xml.exists():
+            (lbl_out / f"{sample_id}.txt").write_text("")
             continue
 
         dst_img = img_out / img.name
@@ -626,40 +678,41 @@ def convert(ids: list[str], split: str) -> None:
             (lbl_out / f"{sample_id}.txt").write_text("")
             continue
         try:
-            width = float(size.findtext("width", default="0") or 0)
-            height = float(size.findtext("height", default="0") or 0)
-        except ValueError:
+            width = float(size.findtext("width", "0"))
+            height = float(size.findtext("height", "0"))
+        except Exception:
             width = height = 0.0
         if width <= 0 or height <= 0:
             (lbl_out / f"{sample_id}.txt").write_text("")
             continue
 
-        lines = []
+        lines: list[str] = []
         for obj in root.findall("object"):
-            name = obj.findtext("name", default="").strip()
+            name = obj.findtext("name", "").strip().lower()
+            if name not in name_to_id:
+                continue
             bbox = obj.find("bndbox")
             if bbox is None:
                 continue
             try:
-                xmin = float(bbox.findtext("xmin", default="0"))
-                ymin = float(bbox.findtext("ymin", default="0"))
-                xmax = float(bbox.findtext("xmax", default="0"))
-                ymax = float(bbox.findtext("ymax", default="0"))
-            except ValueError:
+                xmin = float(bbox.findtext("xmin", "0"))
+                ymin = float(bbox.findtext("ymin", "0"))
+                xmax = float(bbox.findtext("xmax", "0"))
+                ymax = float(bbox.findtext("ymax", "0"))
+            except Exception:
                 continue
             cx = ((xmin + xmax) / 2.0) / width
             cy = ((ymin + ymax) / 2.0) / height
             bw = max(0.0, xmax - xmin) / width
             bh = max(0.0, ymax - ymin) / height
-            lines.append(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}  # {name}")
-
+            cid = name_to_id[name]
+            lines.append(f"{cid} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
         (lbl_out / f"{sample_id}.txt").write_text("\n".join(lines))
 
-train_ids = read_ids(train_split)
-val_ids = read_ids(val_split)
-convert(train_ids, "train")
-convert(val_ids, "val")
-print(f"[ok] VOC-like → YOLO at {out_root}")
+
+convert(read_ids(train_split), "train")
+convert(read_ids(val_split), "val")
+print(f"[ok] VOC-like → YOLO with proper ids at {out_root}")
 PY
 }
 
@@ -668,24 +721,50 @@ convert_pennfudan_to_yolo() {
 import shutil
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+
 src = Path("pennfudan") / "PennFudanPed"
 if not src.exists():
-    print("[!] PennFudan directory missing; skipping conversion")
+    print("[!] PennFudan missing; skipping")
     raise SystemExit(0)
 
 out = Path("pennfudan_yolo")
 (out / "images" / "train").mkdir(parents=True, exist_ok=True)
 (out / "labels" / "train").mkdir(parents=True, exist_ok=True)
 
-for img in (src / "PNGImages").glob("*.png"):
+img_dir = src / "PNGImages"
+mask_dir = src / "PedMasks"
+for img in img_dir.glob("*.png"):
+    msk = mask_dir / f"{img.stem}_mask.png"
+    if not msk.exists():
+        continue
     dst = out / "images" / "train" / img.name
     try:
         dst.symlink_to(img.resolve())
     except Exception:
         shutil.copy2(img, dst)
-    (out / "labels" / "train" / f"{img.stem}.txt").write_text("")
 
-print("[i] PennFudan copied (labels placeholder; refine conversion as needed)")
+    arr = np.array(Image.open(msk))
+    ids = [pid for pid in np.unique(arr) if pid != 0]
+    H, W = arr.shape[:2]
+    lines = []
+    for pid in ids:
+        ys, xs = np.where(arr == pid)
+        if xs.size == 0 or ys.size == 0:
+            continue
+        xmin, xmax = xs.min(), xs.max()
+        ymin, ymax = ys.min(), ys.max()
+        if xmax <= xmin or ymax <= ymin or W <= 0 or H <= 0:
+            continue
+        cx = ((xmin + xmax) / 2.0) / float(W)
+        cy = ((ymin + ymax) / 2.0) / float(H)
+        bw = (xmax - xmin) / float(W)
+        bh = (ymax - ymin) / float(H)
+        lines.append(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+    (out / "labels" / "train" / f"{img.stem}.txt").write_text("\n".join(lines))
+
+print("[ok] PennFudan → YOLO with person boxes")
 PY
 }
 
@@ -693,6 +772,8 @@ convert_kitti_to_yolo() {
   python - <<'PY'
 import shutil
 from pathlib import Path
+
+from PIL import Image
 
 src = Path("kitti")
 img_dir = src / "image_2"
@@ -711,6 +792,11 @@ for img in img_dir.glob("*.png"):
         dst.symlink_to(img.resolve())
     except Exception:
         shutil.copy2(img, dst)
+    try:
+        with Image.open(img) as im:
+            W, H = im.size
+    except Exception:
+        W, H = 0, 0
     lbl_path = lbl_dir / f"{img.stem}.txt"
     lines = []
     if lbl_path.exists():
@@ -727,11 +813,12 @@ for img in img_dir.glob("*.png"):
                 continue
             width = max(0.0, right - left)
             height = max(0.0, bottom - top)
-            W, H = 1242.0, 375.0
-            cx = (left + right) / (2.0 * W)
-            cy = (top + bottom) / (2.0 * H)
-            bw = width / W
-            bh = height / H
+            if W <= 0 or H <= 0:
+                continue
+            cx = (left + right) / (2.0 * float(W))
+            cy = (top + bottom) / (2.0 * float(H))
+            bw = width / float(W)
+            bh = height / float(H)
             cid = {"car": 0, "pedestrian": 1, "cyclist": 2}[cls]
             lines.append(f"{cid} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
     (out / "labels" / "train" / f"{img.stem}.txt").write_text("\n".join(lines))

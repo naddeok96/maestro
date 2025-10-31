@@ -273,20 +273,29 @@ def main() -> None:
         raise RuntimeError("No datasets with available YOLO folders were found for mixing.")
     schedule_names = [source.name for source in sources]
 
-    donor_big_names: Optional[List[List[str]]] = None
-    if args.label_space == "union_full":
-        donor_big_names = []
+    donor_lists: List[List[str]] = []
+    donor_names_in_mix: List[str] = []
+    include_donors = args.label_space in {"overlap_only", "union_full"}
+    if include_donors:
         for donor in ("coco", "lvis"):
             cfg = DEFAULT_DATASETS.get(donor)
             if not cfg:
                 continue
             donor_yaml = Path(str(cfg.get("yaml")))
             fallback = cfg.get("fallback_names", [])
-            names_list = _load_names_from_yaml(donor_yaml, fallback)
-            if names_list:
-                donor_big_names.append(names_list)
-        if not donor_big_names:
-            donor_big_names = None
+            donor_names = _load_names_from_yaml(donor_yaml, fallback)
+            images_dir, labels_dir = _resolve_train_dirs(donor_yaml)
+            if images_dir is None or labels_dir is None:
+                continue
+            sources.append(
+                SourceDS(name=donor, images_dir=images_dir, labels_dir=labels_dir, names=donor_names)
+            )
+            schedule_names.append(donor)
+            donor_names_in_mix.append(donor)
+            if donor_names:
+                donor_lists.append(list(donor_names))
+
+    donor_big_names: Optional[List[List[str]]] = donor_lists or None
     date_dir = args.output_root / f"publication_{args.date_tag}"
     run_dir = date_dir / "yolo_track"
     log_dir = run_dir / "logs"
@@ -370,11 +379,29 @@ def main() -> None:
 
     try:
         for segment in segments_to_run:
-            probes = {
-                name: estimate_probes_with_val(model, cfg["yaml"], imgsz=args.imgsz, dry_run=args.dry_run)
-                for name, cfg in datasets.items()
-                if name in schedule_names
-            }
+            probes: Dict[str, Dict[str, float]] = {}
+            for name, cfg in datasets.items():
+                if name not in schedule_names:
+                    continue
+                probes[name] = estimate_probes_with_val(
+                    model, cfg["yaml"], imgsz=args.imgsz, dry_run=args.dry_run
+                )
+            if donor_names_in_mix:
+                if probes:
+                    keys = set().union(*(stats.keys() for stats in probes.values()))
+                else:
+                    keys = set()
+                default_stats = {
+                    key: float(np.mean([float(stats.get(key, 0.0)) for stats in probes.values()]))
+                    for key in keys
+                }
+                default_stats.setdefault("loss_mean", 1.0)
+                default_stats.setdefault("entropy_mean", 0.0)
+                default_stats.setdefault("loss_iqr", 0.0)
+                default_stats.setdefault("grad_norm_log", 0.0)
+                for donor_name in donor_names_in_mix:
+                    if donor_name not in probes:
+                        probes[donor_name] = dict(default_stats)
             if method == "maestro":
                 if policy is None:
                     raise RuntimeError("Maestro policy is not initialised")
@@ -396,9 +423,7 @@ def main() -> None:
                 }
                 eta_scale = float(eta_array[0]) if eta_array is not None else 1.0
                 usage = float(usage_array[0]) if usage_array is not None else float(np.clip(args.min_usage, 0.0, 1.0))
-            weights_full = {
-                name: float(weights_schedule.get(name, 0.0)) for name in datasets.keys()
-            }
+            weights_full = {name: float(weights_schedule.get(name, 0.0)) for name in schedule_names}
             if budget_remaining <= 0:
                 print("No budget remaining; stopping early.")
                 break
