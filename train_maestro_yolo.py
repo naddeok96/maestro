@@ -6,7 +6,7 @@ import argparse
 import csv
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -127,7 +127,7 @@ def main() -> None:
     parser.add_argument("--device", default="auto", help="Computation device for YOLO")
     parser.add_argument("--datasets", nargs="*", default=list(DEFAULT_DATASETS.keys()), help="Datasets to include")
     parser.add_argument("--output-root", type=Path, default=Path("outputs"), help="Root output directory")
-    parser.add_argument("--date-tag", default=datetime.utcnow().strftime("%Y%m%d"), help="Date tag for outputs")
+    parser.add_argument("--date-tag", default=datetime.now(UTC).strftime("%Y%m%d"), help="Date tag for outputs")
     parser.add_argument("--no-resume", action="store_true", help="Start a fresh run even if logs exist")
     parser.add_argument("--dry-run", action="store_true", help="Run a fast deterministic CI-friendly simulation")
     parser.add_argument("--min-usage", type=float, default=0.2, help="Lower bound for usage fraction")
@@ -192,7 +192,7 @@ def main() -> None:
     _update_metadata(date_dir, {"config": asdict(run_config)})
 
     wandb_run = init_wandb_run(
-        f"yolo_track_{args.date_tag}_{datetime.utcnow().strftime('%H%M%S')}",
+        f"yolo_track_{args.date_tag}_{datetime.now(UTC).strftime('%H%M%S')}",
         config={"config": asdict(run_config)},
     )
 
