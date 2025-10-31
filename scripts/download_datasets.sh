@@ -102,8 +102,8 @@ cd ..
 
 echo "[*] Preparing LVIS annotations"
 mkdir -p lvis && cd lvis
-wget -c https://dl.fbaipublicfiles.com/lvis/lvis_v1_train.json.zip
-wget -c https://dl.fbaipublicfiles.com/lvis/lvis_v1_val.json.zip
+wget -c https://dl.fbaipublicfiles.com/Lvis/lvis_v1_train.json.zip
+wget -c https://dl.fbaipublicfiles.com/Lvis/lvis_v1_val.json.zip
 unzip -n lvis_v1_train.json.zip
 unzip -n lvis_v1_val.json.zip
 cd ..
