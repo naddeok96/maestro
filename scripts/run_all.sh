@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- venv bootstrap ---
+VENV_DIR="${VENV_DIR:-.venv}"
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  echo "[run_all] No active venv found; creating ${VENV_DIR}"
+  python3 -m venv "${VENV_DIR}"
+  # shellcheck disable=SC1090
+  source "${VENV_DIR}/bin/activate"
+  echo "[run_all] Activated venv at ${VENV_DIR}"
+else
+  echo "[run_all] Using existing venv: ${VIRTUAL_ENV}"
+fi
+
 DRY_RUN=false
 if [[ "${1:-}" == "--dry-run" ]]; then
   DRY_RUN=true
@@ -21,6 +33,7 @@ echo "[run_all] Outputs -> $OUT_ROOT"
 
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+python -m pip install -e .
 
 if [[ "$DRY_RUN" == "false" ]]; then
   bash scripts/download_datasets.sh ./data
