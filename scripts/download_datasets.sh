@@ -2,12 +2,12 @@
 set -euo pipefail
 
 # ---------------------- Config toggles ----------------------
-DATA_DIR="${1:-$PWD/data}"
+DATA_DIR_INPUT="${1:-$PWD/data}"
 MAKE_YOLO="${MAKE_YOLO:-true}"    # set to "false" to skip YOLO conversion
 USE_VOC="${USE_VOC:-false}"       # set to "true" to download PASCAL VOC
 # ------------------------------------------------------------
 
-mkdir -p "$DATA_DIR"
+DATA_DIR="$(cd "$(dirname "$DATA_DIR_INPUT")" && mkdir -p "$(basename "$DATA_DIR_INPUT")" && cd "$(basename "$DATA_DIR_INPUT")" && pwd)"
 cd "$DATA_DIR"
 
 if [[ "${DRY_RUN:-false}" == "true" ]]; then
