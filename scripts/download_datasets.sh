@@ -423,3 +423,348 @@ else
 fi
 
 echo "[✓] Dataset preparation finished at $DATA_DIR"
+
+###############################################################################
+# Small, public datasets (Clipart1k, Watercolor2k, Comic2k, PennFudan, KITTI)
+###############################################################################
+
+download_clipart1k() {
+  local OUTDIR="clipart1k"
+  mkdir -p "$OUTDIR"
+  if [[ -n "${CLIPART1K_URL:-}" ]]; then
+    echo "[*] Fetching Clipart1k from $CLIPART1K_URL"
+    if wget -c -O "$OUTDIR/clipart1k.zip" "$CLIPART1K_URL"; then
+      unzip -n "$OUTDIR/clipart1k.zip" -d "$OUTDIR"
+    else
+      echo "[!] Failed to download from CLIPART1K_URL"
+    fi
+  else
+    echo "[i] Clipart1k needs a manual download (see project links)."
+    echo "    Place VOC-format folders under: $OUTDIR/{JPEGImages,Annotations,ImageSets}"
+    echo "    Reference: CVPR’18 Cross-Domain WSOD project page."
+  fi
+}
+
+download_watercolor2k() {
+  local OUTDIR="watercolor2k"
+  mkdir -p "$OUTDIR"
+  echo "[*] Watercolor2k page: https://opendatalab.com/OpenDataLab/Watercolor2k/download"
+  echo "[i] Download the dataset and place VOC-style dirs into: $OUTDIR/{JPEGImages,Annotations,ImageSets}"
+}
+
+download_comic2k() {
+  local OUTDIR="comic2k"
+  mkdir -p "$OUTDIR"
+  echo "[*] Comic2k page: https://opendatalab.com/OpenDataLab/Comic2k/download"
+  echo "[i] Download and place VOC-style dirs into: $OUTDIR/{JPEGImages,Annotations,ImageSets}"
+}
+
+download_pennfudan() {
+  local OUTDIR="pennfudan"
+  mkdir -p "$OUTDIR"
+  echo "[*] Downloading Penn-Fudan zip from UPenn"
+  if wget -c -O "$OUTDIR/PennFudanPed.zip" "https://www.cis.upenn.edu/~jshi/ped_html/PennFudanPed.zip"; then
+    unzip -n "$OUTDIR/PennFudanPed.zip" -d "$OUTDIR"
+  else
+    echo "[!] Could not auto-download PennFudan. Download manually from the page and re-run."
+  fi
+}
+
+download_kitti() {
+  local OUTDIR="kitti"
+  mkdir -p "$OUTDIR"
+  echo "[*] KITTI official: https://www.cvlibs.net/datasets/kitti/"
+  echo "[i] Please download 2D object detection 'data_object_image_2' and 'data_object_label_2' and place them under: $OUTDIR"
+  echo "    $OUTDIR/image_2, $OUTDIR/label_2 (train split)"
+}
+
+write_yaml_clipart1k() {
+  mkdir -p configs/datasets
+  cat > configs/datasets/clipart1k.yaml <<'YAML'
+path: ./data/clipart1k_yolo
+train: images/train
+val: images/val
+names:
+  0: aeroplane
+  1: bicycle
+  2: bird
+  3: boat
+  4: bottle
+  5: bus
+  6: car
+  7: cat
+  8: chair
+  9: cow
+  10: diningtable
+  11: dog
+  12: horse
+  13: motorbike
+  14: person
+  15: pottedplant
+  16: sheep
+  17: sofa
+  18: train
+  19: tvmonitor
+YAML
+  echo "[ok] wrote configs/datasets/clipart1k.yaml"
+}
+
+write_yaml_watercolor2k() {
+  mkdir -p configs/datasets
+  cat > configs/datasets/watercolor2k.yaml <<'YAML'
+path: ./data/watercolor2k_yolo
+train: images/train
+val: images/val
+names:
+  0: bicycle
+  1: bird
+  2: car
+  3: cat
+  4: dog
+  5: person
+YAML
+  echo "[ok] wrote configs/datasets/watercolor2k.yaml"
+}
+
+write_yaml_comic2k() {
+  mkdir -p configs/datasets
+  cat > configs/datasets/comic2k.yaml <<'YAML'
+path: ./data/comic2k_yolo
+train: images/train
+val: images/val
+names:
+  0: bicycle
+  1: bird
+  2: car
+  3: cat
+  4: dog
+  5: person
+YAML
+  echo "[ok] wrote configs/datasets/comic2k.yaml"
+}
+
+write_yaml_pennfudan() {
+  mkdir -p configs/datasets
+  cat > configs/datasets/pennfudan.yaml <<'YAML'
+path: ./data/pennfudan_yolo
+train: images/train
+val: images/val
+names:
+  0: person
+YAML
+  echo "[ok] wrote configs/datasets/pennfudan.yaml"
+}
+
+write_yaml_kitti() {
+  mkdir -p configs/datasets
+  cat > configs/datasets/kitti.yaml <<'YAML'
+path: ./data/kitti_yolo
+train: images/train
+val: images/val
+names:
+  0: car
+  1: pedestrian
+  2: cyclist
+YAML
+  echo "[ok] wrote configs/datasets/kitti.yaml"
+}
+
+convert_voc_like_to_yolo() {
+  local SRC_ROOT="$1"
+  local OUT_ROOT="$2"
+  local TRAIN_SPLIT="${3:-train}"
+  local VAL_SPLIT="${4:-val}"
+
+  SRC_ROOT="$SRC_ROOT" OUT_ROOT="$OUT_ROOT" TRAIN_SPLIT="$TRAIN_SPLIT" VAL_SPLIT="$VAL_SPLIT" python - <<'PY'
+import os
+import shutil
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+src_root = Path(os.environ["SRC_ROOT"]).resolve()
+out_root = Path(os.environ["OUT_ROOT"]).resolve()
+train_split = os.environ.get("TRAIN_SPLIT", "train")
+val_split = os.environ.get("VAL_SPLIT", "val")
+
+jpeg = src_root / "JPEGImages"
+ann = src_root / "Annotations"
+sets = src_root / "ImageSets" / "Main"
+
+def read_ids(split_name: str) -> list[str]:
+    txt = sets / f"{split_name}.txt"
+    if txt.exists():
+        return [line.strip() for line in txt.read_text().splitlines() if line.strip()]
+    return [p.stem for p in jpeg.glob("*.jpg")]
+
+def convert(ids: list[str], split: str) -> None:
+    img_out = out_root / "images" / split
+    lbl_out = out_root / "labels" / split
+    img_out.mkdir(parents=True, exist_ok=True)
+    lbl_out.mkdir(parents=True, exist_ok=True)
+
+    for sample_id in ids:
+        img = jpeg / f"{sample_id}.jpg"
+        if not img.exists():
+            alt = jpeg / f"{sample_id}.png"
+            if alt.exists():
+                img = alt
+            else:
+                continue
+        xml = ann / f"{sample_id}.xml"
+        if not xml.exists():
+            continue
+
+        dst_img = img_out / img.name
+        try:
+            dst_img.symlink_to(img.resolve())
+        except Exception:
+            shutil.copy2(img, dst_img)
+
+        root = ET.parse(xml).getroot()
+        size = root.find("size")
+        if size is None:
+            (lbl_out / f"{sample_id}.txt").write_text("")
+            continue
+        try:
+            width = float(size.findtext("width", default="0") or 0)
+            height = float(size.findtext("height", default="0") or 0)
+        except ValueError:
+            width = height = 0.0
+        if width <= 0 or height <= 0:
+            (lbl_out / f"{sample_id}.txt").write_text("")
+            continue
+
+        lines = []
+        for obj in root.findall("object"):
+            name = obj.findtext("name", default="").strip()
+            bbox = obj.find("bndbox")
+            if bbox is None:
+                continue
+            try:
+                xmin = float(bbox.findtext("xmin", default="0"))
+                ymin = float(bbox.findtext("ymin", default="0"))
+                xmax = float(bbox.findtext("xmax", default="0"))
+                ymax = float(bbox.findtext("ymax", default="0"))
+            except ValueError:
+                continue
+            cx = ((xmin + xmax) / 2.0) / width
+            cy = ((ymin + ymax) / 2.0) / height
+            bw = max(0.0, xmax - xmin) / width
+            bh = max(0.0, ymax - ymin) / height
+            lines.append(f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}  # {name}")
+
+        (lbl_out / f"{sample_id}.txt").write_text("\n".join(lines))
+
+train_ids = read_ids(train_split)
+val_ids = read_ids(val_split)
+convert(train_ids, "train")
+convert(val_ids, "val")
+print(f"[ok] VOC-like → YOLO at {out_root}")
+PY
+}
+
+convert_pennfudan_to_yolo() {
+  python - <<'PY'
+import shutil
+from pathlib import Path
+
+src = Path("pennfudan") / "PennFudanPed"
+if not src.exists():
+    print("[!] PennFudan directory missing; skipping conversion")
+    raise SystemExit(0)
+
+out = Path("pennfudan_yolo")
+(out / "images" / "train").mkdir(parents=True, exist_ok=True)
+(out / "labels" / "train").mkdir(parents=True, exist_ok=True)
+
+for img in (src / "PNGImages").glob("*.png"):
+    dst = out / "images" / "train" / img.name
+    try:
+        dst.symlink_to(img.resolve())
+    except Exception:
+        shutil.copy2(img, dst)
+    (out / "labels" / "train" / f"{img.stem}.txt").write_text("")
+
+print("[i] PennFudan copied (labels placeholder; refine conversion as needed)")
+PY
+}
+
+convert_kitti_to_yolo() {
+  python - <<'PY'
+import shutil
+from pathlib import Path
+
+src = Path("kitti")
+img_dir = src / "image_2"
+lbl_dir = src / "label_2"
+if not img_dir.exists() or not lbl_dir.exists():
+    print("[!] KITTI folders image_2/label_2 not found")
+    raise SystemExit(0)
+
+out = Path("kitti_yolo")
+(out / "images" / "train").mkdir(parents=True, exist_ok=True)
+(out / "labels" / "train").mkdir(parents=True, exist_ok=True)
+
+for img in img_dir.glob("*.png"):
+    dst = out / "images" / "train" / img.name
+    try:
+        dst.symlink_to(img.resolve())
+    except Exception:
+        shutil.copy2(img, dst)
+    lbl_path = lbl_dir / f"{img.stem}.txt"
+    lines = []
+    if lbl_path.exists():
+        for raw in lbl_path.read_text().splitlines():
+            parts = raw.split()
+            if len(parts) < 8:
+                continue
+            cls = parts[0].lower()
+            if cls not in {"car", "pedestrian", "cyclist"}:
+                continue
+            try:
+                left, top, right, bottom = map(float, parts[4:8])
+            except ValueError:
+                continue
+            width = max(0.0, right - left)
+            height = max(0.0, bottom - top)
+            W, H = 1242.0, 375.0
+            cx = (left + right) / (2.0 * W)
+            cy = (top + bottom) / (2.0 * H)
+            bw = width / W
+            bh = height / H
+            cid = {"car": 0, "pedestrian": 1, "cyclist": 2}[cls]
+            lines.append(f"{cid} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+    (out / "labels" / "train" / f"{img.stem}.txt").write_text("\n".join(lines))
+
+print("[ok] KITTI → YOLO")
+PY
+}
+
+prep_small_sets() {
+  echo "[*] Preparing small public datasets"
+  pushd "$DATA_DIR" >/dev/null
+
+  download_clipart1k
+  download_watercolor2k
+  download_comic2k
+  download_pennfudan
+  download_kitti
+
+  [[ -d clipart1k/JPEGImages ]] && convert_voc_like_to_yolo "clipart1k" "clipart1k_yolo" "train" "val"
+  [[ -d watercolor2k/JPEGImages ]] && convert_voc_like_to_yolo "watercolor2k" "watercolor2k_yolo" "train" "test"
+  [[ -d comic2k/JPEGImages ]] && convert_voc_like_to_yolo "comic2k" "comic2k_yolo" "train" "test"
+  [[ -d pennfudan/PennFudanPed ]] && convert_pennfudan_to_yolo || true
+  [[ -d kitti/image_2 ]] && convert_kitti_to_yolo || true
+
+  popd >/dev/null
+
+  write_yaml_clipart1k
+  write_yaml_watercolor2k
+  write_yaml_comic2k
+  write_yaml_pennfudan
+  write_yaml_kitti
+}
+
+# Trigger preparation after the core datasets are handled
+prep_small_sets
+
