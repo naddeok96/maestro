@@ -210,3 +210,9 @@ __marimo__/
 
 combine_repo.py
 combined_repo.md
+wandb/
+temp*
+runs/
+outputs/
+data/
+*.pt
