@@ -34,12 +34,6 @@ if [[ "$DRY_RUN" == "true" ]]; then
 fi
 "${YOLO_CMD[@]}"
 
-TRANSFER_CMD=(python scripts/run_large_transfer.py --output-root outputs --date-tag "$DATE_TAG")
-if [[ "$DRY_RUN" == "true" ]]; then
-  TRANSFER_CMD+=(--dry-run)
-fi
-"${TRANSFER_CMD[@]}"
-
 BASELINE_CONFIG="configs/meta_train/small_cpu_debug.yaml"
 if [[ -f "$BASELINE_CONFIG" ]]; then
   METHODS=(ppo uniform easy_to_hard greedy bandit_linucb bandit_thompson pbt bohb)

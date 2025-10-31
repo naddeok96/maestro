@@ -14,6 +14,7 @@ import numpy as np
 
 from maestro.policy import MaestroPolicy, MaestroPolicyConfig
 from maestro.probes import DummyYOLO, build_model, estimate_probes_with_val
+from maestro.utils.wandb import init_wandb_run, log_checkpoint, log_metrics
 
 
 DEFAULT_DATASETS: Dict[str, Dict[str, str]] = {
@@ -190,102 +191,132 @@ def main() -> None:
     )
     _update_metadata(date_dir, {"config": asdict(run_config)})
 
+    wandb_run = init_wandb_run(
+        f"yolo_track_{args.date_tag}_{datetime.utcnow().strftime('%H%M%S')}",
+        config={"config": asdict(run_config)},
+    )
+
     csv_path = raw_dir / "yolo_segments.csv"
     segments_to_run = range(start_segment, args.segments + 1)
     print(f"Starting MAESTRO YOLO training from segment {start_segment} to {args.segments}")
 
-    for segment in segments_to_run:
-        probes = {
-            name: estimate_probes_with_val(model, cfg["yaml"], imgsz=args.imgsz, dry_run=args.dry_run)
-            for name, cfg in datasets.items()
-        }
-        weights, eta_scale, usage = policy.get_action(probes, budget_remaining, segment, args.segments)
-        if budget_remaining <= 0:
-            print("No budget remaining; stopping early.")
-            break
-        steps_total = max(1, int(usage * max(1, budget_remaining) / max(args.batch, 1)))
-        steps_by_dataset = _distribute_steps(weights, steps_total)
-        lr_segment = args.base_lr * eta_scale
-        print(
-            f"[segment {segment}] weights={weights} eta_scale={eta_scale:.3f} usage={usage:.3f} steps={steps_total} lr={lr_segment:.5f}"
-        )
+    try:
+        for segment in segments_to_run:
+            probes = {
+                name: estimate_probes_with_val(model, cfg["yaml"], imgsz=args.imgsz, dry_run=args.dry_run)
+                for name, cfg in datasets.items()
+            }
+            weights, eta_scale, usage = policy.get_action(probes, budget_remaining, segment, args.segments)
+            if budget_remaining <= 0:
+                print("No budget remaining; stopping early.")
+                break
+            steps_total = max(1, int(usage * max(1, budget_remaining) / max(args.batch, 1)))
+            steps_by_dataset = _distribute_steps(weights, steps_total)
+            lr_segment = args.base_lr * eta_scale
+            print(
+                f"[segment {segment}] weights={weights} eta_scale={eta_scale:.3f} usage={usage:.3f} steps={steps_total} lr={lr_segment:.5f}"
+            )
 
-        for dataset_name, steps in steps_by_dataset.items():
-            if steps <= 0:
-                continue
-            yaml_path = datasets[dataset_name]["yaml"]
-            print(f"  -> training {dataset_name} for {steps} micro-epochs")
-            for _ in range(steps):
-                overrides = dict(
-                    data=yaml_path,
-                    imgsz=args.imgsz,
-                    epochs=1,
-                    batch=args.batch,
-                    device=args.device,
-                    workers=0,
-                    lr0=lr_segment,
-                    resume=True,
-                    project=str(run_dir),
-                    name="exp",
-                    save=False,
-                    val=False,
-                    verbose=False,
+            for dataset_name, steps in steps_by_dataset.items():
+                if steps <= 0:
+                    continue
+                yaml_path = datasets[dataset_name]["yaml"]
+                print(f"  -> training {dataset_name} for {steps} micro-epochs")
+                for _ in range(steps):
+                    overrides = dict(
+                        data=yaml_path,
+                        imgsz=args.imgsz,
+                        epochs=1,
+                        batch=args.batch,
+                        device=args.device,
+                        workers=0,
+                        lr0=lr_segment,
+                        resume=True,
+                        project=str(run_dir),
+                        name="exp",
+                        save=False,
+                        val=False,
+                        verbose=False,
+                    )
+                    model.train(**overrides)
+
+            per_dataset_metrics: Dict[str, Dict[str, float]] = {}
+            for dataset_name, cfg in datasets.items():
+                metrics = model.val(data=cfg["yaml"], imgsz=args.imgsz, device=args.device, verbose=False, save=False)
+                map_value = float(getattr(metrics.box, "map", 0.0)) if hasattr(metrics, "box") else 0.0
+                map50_value = float(getattr(metrics.box, "map50", 0.0)) if hasattr(metrics, "box") else 0.0
+                per_dataset_metrics[dataset_name] = {"mAP": map_value, "mAP50": map50_value}
+
+            macro_map = float(np.mean([stats["mAP"] for stats in per_dataset_metrics.values()]))
+            next_budget = max(0, budget_remaining - steps_total * args.batch)
+            record = {
+                "segment": segment,
+                "weights": weights,
+                "eta_scale": eta_scale,
+                "usage": usage,
+                "budget_remaining": next_budget,
+                "per_dataset": per_dataset_metrics,
+                "macro_mAP": macro_map,
+            }
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record) + "\n")
+
+            rows = []
+            for dataset_name, stats in per_dataset_metrics.items():
+                rows.append(
+                    {
+                        "segment": segment,
+                        "dataset": dataset_name,
+                        "metric": "mAP",
+                        "value": stats["mAP"],
+                        "macro_mAP": macro_map,
+                    }
                 )
-                model.train(**overrides)
+                rows.append(
+                    {
+                        "segment": segment,
+                        "dataset": dataset_name,
+                        "metric": "mAP50",
+                        "value": stats["mAP50"],
+                        "macro_mAP": macro_map,
+                    }
+                )
+            _append_segment_csv(csv_path, rows)
 
-        per_dataset_metrics: Dict[str, Dict[str, float]] = {}
-        for dataset_name, cfg in datasets.items():
-            metrics = model.val(data=cfg["yaml"], imgsz=args.imgsz, device=args.device, verbose=False, save=False)
-            map_value = float(getattr(metrics.box, "map", 0.0)) if hasattr(metrics, "box") else 0.0
-            map50_value = float(getattr(metrics.box, "map50", 0.0)) if hasattr(metrics, "box") else 0.0
-            per_dataset_metrics[dataset_name] = {"mAP": map_value, "mAP50": map50_value}
-
-        macro_map = float(np.mean([stats["mAP"] for stats in per_dataset_metrics.values()]))
-        record = {
-            "segment": segment,
-            "weights": weights,
-            "eta_scale": eta_scale,
-            "usage": usage,
-            "budget_remaining": max(0, budget_remaining - steps_total * args.batch),
-            "per_dataset": per_dataset_metrics,
-            "macro_mAP": macro_map,
-        }
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record) + "\n")
-
-        rows = []
-        for dataset_name, stats in per_dataset_metrics.items():
-            rows.append(
+            weight_metrics = {f"weights/{name}": float(value) for name, value in weights.items()}
+            dataset_metrics_payload = {
+                f"mAP/{name}": stats["mAP"] for name, stats in per_dataset_metrics.items()
+            }
+            dataset_metrics_payload.update(
+                {f"mAP50/{name}": stats["mAP50"] for name, stats in per_dataset_metrics.items()}
+            )
+            log_metrics(
                 {
                     "segment": segment,
-                    "dataset": dataset_name,
-                    "metric": "mAP",
-                    "value": stats["mAP"],
+                    "steps_total": steps_total,
                     "macro_mAP": macro_map,
+                    "eta_scale": float(eta_scale),
+                    "usage": float(usage),
+                    "budget_remaining": next_budget,
+                    **weight_metrics,
+                    **dataset_metrics_payload,
                 }
             )
-            rows.append(
-                {
-                    "segment": segment,
-                    "dataset": dataset_name,
-                    "metric": "mAP50",
-                    "value": stats["mAP50"],
-                    "macro_mAP": macro_map,
-                }
-            )
-        _append_segment_csv(csv_path, rows)
 
-        ckpt_path = ckpt_dir / f"yolo_seg{segment}.pt"
-        if isinstance(model, DummyYOLO):
-            model.save(str(ckpt_path))
-        else:
-            model.save(str(ckpt_path))
+            ckpt_path = ckpt_dir / f"yolo_seg{segment}.pt"
+            if isinstance(model, DummyYOLO):
+                model.save(str(ckpt_path))
+            else:
+                model.save(str(ckpt_path))
+            log_checkpoint(ckpt_path, ckpt_dir)
 
-        budget_remaining = max(0, budget_remaining - steps_total * args.batch)
-        print(f"[segment {segment}] macro mAP={macro_map:.4f} budget_remaining={budget_remaining}")
-        if budget_remaining <= 0:
-            print("Budget exhausted – stopping early.")
-            break
+            budget_remaining = next_budget
+            print(f"[segment {segment}] macro mAP={macro_map:.4f} budget_remaining={budget_remaining}")
+            if budget_remaining <= 0:
+                print("Budget exhausted – stopping early.")
+                break
+    finally:
+        wandb_run.finish()
 
     print(f"[✓] YOLO training complete. Logs written to {log_path}")
 

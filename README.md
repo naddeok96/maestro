@@ -44,7 +44,13 @@ python scripts/run_markov_diag.py --config configs/meta_train/small_cpu_debug.ya
 4. Generate the paper figures and tables from the saved CSV/JSON artefacts:
 
 ```bash
-python scripts/plot_make_figures.py --run-dir outputs/debug_run
+ python scripts/plot_make_figures.py --run-dir outputs/debug_run
+```
+
+5. To reproduce the YOLO curriculum track controlled by MAESTRO:
+
+```bash
+python train_maestro_yolo.py --output-root outputs --date-tag $(date +%Y%m%d)
 ```
 
 All scripts support the `--dry-run` flag to verify configuration loading without

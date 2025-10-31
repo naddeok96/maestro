@@ -24,8 +24,8 @@ def _mlp(
 class DeepSetsEncoder(nn.Module):
     def __init__(self, input_dim: int = 8, phi_dim: int = 64, rho_dim: int = 64):
         super().__init__()
-        self.phi = _mlp(input_dim, (phi_dim,), phi_dim)
-        self.rho = _mlp(phi_dim, (rho_dim,), rho_dim)
+        self.phi = _mlp(input_dim, (phi_dim, phi_dim, phi_dim), phi_dim)
+        self.rho = _mlp(phi_dim, (rho_dim, rho_dim, rho_dim), rho_dim)
 
     def forward(self, descriptors: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if descriptors.dim() != 2:

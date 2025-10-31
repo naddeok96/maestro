@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -17,6 +18,7 @@ from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
 from maestro.eval.transfer import evaluate_transfer
 from maestro.policy.ppo import PPOConfig, PPOTeacher, TeacherPolicy
 from maestro.utils.config import load_config
+from maestro.utils.wandb import init_wandb_run, log_metrics
 
 
 def _build_env(
@@ -77,44 +79,67 @@ def main() -> None:
         {"drop_data_block": True},
     ]
 
+    run_name = f"ablation_suite_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    wandb_run = init_wandb_run(
+        run_name,
+        config={
+            "config": config,
+            "task_cfg": task_cfg,
+            "train_episodes": args.train_episodes,
+            "steps": args.steps,
+        },
+    )
+
     results = []
-    for flags in flag_space:
-        policy = TeacherPolicy(
-            descriptor_dim=8,
-            g_model_dim=6,
-            g_progress_dim=11,
-            eta_bounds=(
-                config["optimizer"]["eta_min"],
-                config["optimizer"]["eta_max"],
-            ),
-        )
+    try:
+        for flags in flag_space:
+            policy = TeacherPolicy(
+                descriptor_dim=8,
+                g_model_dim=6,
+                g_progress_dim=11,
+                eta_bounds=(
+                    config["optimizer"]["eta_min"],
+                    config["optimizer"]["eta_max"],
+                ),
+            )
 
-        if args.checkpoint and args.checkpoint.exists():
-            state = torch.load(args.checkpoint, map_location="cpu")
-            policy.load_state_dict(state.get("policy", state))
-        elif args.train_episodes > 0:
-            ppo = PPOTeacher(policy, PPOConfig(**config.get("ppo", {})))
-            for episode in range(args.train_episodes):
-                env_train = _build_env(
-                    config,
-                    task_cfg,
-                    seed + episode * 13,
-                    flags if flags else None,
-                )
-                try:
-                    ppo.train_episode(env_train, config["horizon"])
-                finally:
-                    env_train.close()
+            if args.checkpoint and args.checkpoint.exists():
+                state = torch.load(args.checkpoint, map_location="cpu")
+                policy.load_state_dict(state.get("policy", state))
+            elif args.train_episodes > 0:
+                ppo = PPOTeacher(policy, PPOConfig(**config.get("ppo", {})))
+                for episode in range(args.train_episodes):
+                    env_train = _build_env(
+                        config,
+                        task_cfg,
+                        seed + episode * 13,
+                        flags if flags else None,
+                    )
+                    try:
+                        ppo.train_episode(env_train, config["horizon"])
+                    finally:
+                        env_train.close()
 
-        env_eval = _build_env(config, task_cfg, seed + 777, flags if flags else None)
-        try:
-            stats = evaluate_transfer(env_eval, policy, steps=args.steps)
-        finally:
-            env_eval.close()
+            env_eval = _build_env(config, task_cfg, seed + 777, flags if flags else None)
+            try:
+                stats = evaluate_transfer(env_eval, policy, steps=args.steps)
+            finally:
+                env_eval.close()
 
-        row = {"flags": json.dumps(flags, sort_keys=True)}
-        row.update(stats)
-        results.append(row)
+            row = {"flags": json.dumps(flags, sort_keys=True)}
+            row.update(stats)
+            results.append(row)
+            flag_metrics = {f"flags/{name}": float(value) for name, value in flags.items()}
+            metrics_payload = {
+                "macro_accuracy": stats.get("macro_accuracy", 0.0),
+                "return": stats.get("return", 0.0),
+                "avg_usage": stats.get("avg_usage", 0.0),
+                "avg_eta": stats.get("avg_eta", 0.0),
+                "avg_u": stats.get("avg_u", 0.0),
+            }
+            log_metrics({k: v for k, v in {**flag_metrics, **metrics_payload}.items() if isinstance(v, (int, float))})
+    finally:
+        wandb_run.finish()
 
     df = pd.DataFrame(results)
     args.output_dir.mkdir(parents=True, exist_ok=True)

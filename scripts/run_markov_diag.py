@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List
 
 from maestro.datasets import build_from_config
 from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
 from maestro.eval.markov_diag import Transition, compute_markov_diagnostics
 from maestro.policy.ppo import TeacherPolicy
 from maestro.utils.config import load_config
+from maestro.utils.wandb import init_wandb_run, log_metrics
 
 
 def build_env(config: Dict[str, Any], task_cfg: str, seed: int) -> MaestroEnv:
@@ -48,28 +50,38 @@ def main() -> None:
     )
 
     diagnostics_per_task: Dict[str, Dict[str, float]] = {}
-    task_list: Iterable[str] = config.get("eval_tasks", config["tasks"])
+    task_list: List[str] = list(config.get("eval_tasks", config["tasks"]))
     base_seed = config.get("seed", 0)
-    for index, task_cfg in enumerate(task_list):
-        env_seed = base_seed + index * 19
-        env = build_env(config, task_cfg, env_seed)
-        transitions: List[Transition] = []
-        obs, _ = env.reset()
-        descriptors = env.last_per_dataset_descriptors
-        for _ in range(config["horizon"]):
-            action, _, _, _ = policy.act(obs, descriptors)
-            next_obs, reward, done, _, _ = env.step(action)
-            transitions.append(
-                Transition(state=obs, action=action, next_state=next_obs)
-            )
-            obs = next_obs
+    run_name = f"markov_diag_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    wandb_run = init_wandb_run(
+        run_name,
+        config={"config": config, "tasks": task_list},
+    )
+
+    try:
+        for index, task_cfg in enumerate(task_list):
+            env_seed = base_seed + index * 19
+            env = build_env(config, task_cfg, env_seed)
+            transitions: List[Transition] = []
+            obs, _ = env.reset()
             descriptors = env.last_per_dataset_descriptors
-            if done:
-                break
-        diagnostics_per_task[Path(task_cfg).stem] = compute_markov_diagnostics(
-            transitions
-        )
-        env.close()
+            for _ in range(config["horizon"]):
+                action, _, _, _ = policy.act(obs, descriptors)
+                next_obs, reward, done, _, _ = env.step(action)
+                transitions.append(
+                    Transition(state=obs, action=action, next_state=next_obs)
+                )
+                obs = next_obs
+                descriptors = env.last_per_dataset_descriptors
+                if done:
+                    break
+            task_key = Path(task_cfg).stem
+            diagnostics = compute_markov_diagnostics(transitions)
+            diagnostics_per_task[task_key] = diagnostics
+            log_metrics({f"markov/{task_key}/{k}": v for k, v in diagnostics.items()})
+            env.close()
+    finally:
+        wandb_run.finish()
     print(diagnostics_per_task)
 
 

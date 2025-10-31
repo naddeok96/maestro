@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 
@@ -15,6 +16,7 @@ from maestro.policy.ppo import PPOConfig, PPOTeacher, TeacherPolicy
 from maestro.utils import RunPaths
 from maestro.utils.config import load_config
 from maestro.utils.logging import MetricsLogger
+from maestro.utils.wandb import init_wandb_run, log_checkpoint, log_metrics
 
 
 def build_env_for_task(config: Dict[str, Any], task_cfg: str, seed: int) -> MaestroEnv:
@@ -91,6 +93,8 @@ def main() -> None:
     output_dir = get_output_directory(config, args)
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = MetricsLogger(output_dir)
+    run_name = f"ppo_meta_train_{seed}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    wandb_run = init_wandb_run(run_name, config={"config": config, "seed": seed})
 
     ppo_cfg = PPOConfig(**config.get("ppo", {}))
     policy = TeacherPolicy(
@@ -119,36 +123,40 @@ def main() -> None:
     total_episodes = config.get("run", {}).get("total_episodes", 1)
     checkpoint_interval = config.get("run", {}).get("checkpoint_interval", 50)
 
-    for episode in range(start_episode, total_episodes):
-        task_cfg = tasks[episode % len(tasks)]
-        env_seed = seed + episode * 31
-        env = build_env_for_task(config, task_cfg, env_seed)
-        stats = ppo.train_episode(env, config["horizon"])
-        env.close()
-        stats["episode"] = episode
-        stats["task"] = Path(task_cfg).stem
-        logger.log_row(stats)
+    try:
+        for episode in range(start_episode, total_episodes):
+            task_cfg = tasks[episode % len(tasks)]
+            env_seed = seed + episode * 31
+            env = build_env_for_task(config, task_cfg, env_seed)
+            stats = ppo.train_episode(env, config["horizon"])
+            env.close()
+            stats["episode"] = episode
+            stats["task"] = Path(task_cfg).stem
+            logger.log_row(stats)
+            log_metrics(stats)
 
-        current_return = stats["return"]
-        is_best = best_return is None or current_return > best_return
-        if is_best:
-            best_return = current_return
+            current_return = stats["return"]
+            is_best = best_return is None or current_return > best_return
+            if is_best:
+                best_return = current_return
 
-        should_checkpoint = (episode + 1) % checkpoint_interval == 0 or is_best
-        if should_checkpoint:
-            save_checkpoint(
-                {
-                    "policy": policy.state_dict(),
-                    "optim": ppo.optim.state_dict(),
-                    "config": config,
-                    "episode": episode + 1,
-                    "best_return": best_return,
-                    "lambda_cmdp": ppo.lambda_cmdp,
-                },
-                checkpoint_path,
-            )
-
-    logger.flush_json()
+            should_checkpoint = (episode + 1) % checkpoint_interval == 0 or is_best
+            if should_checkpoint:
+                save_checkpoint(
+                    {
+                        "policy": policy.state_dict(),
+                        "optim": ppo.optim.state_dict(),
+                        "config": config,
+                        "episode": episode + 1,
+                        "best_return": best_return,
+                        "lambda_cmdp": ppo.lambda_cmdp,
+                    },
+                    checkpoint_path,
+                )
+                log_checkpoint(checkpoint_path, output_dir)
+    finally:
+        logger.flush_json()
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
