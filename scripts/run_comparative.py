@@ -28,6 +28,8 @@ METHOD_CHOICES = [
     "greedy",
     "bandit_linucb",
     "bandit_thompson",
+    "pbt",
+    "bohb",
 ]
 
 
