@@ -1,107 +1,93 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# -------- settings you may tweak --------
-RUN_DIR="outputs/exp_suite_$(date +%Y%m%d_%H%M%S)"
-LOG_DIR="$RUN_DIR/logs"
-PY=python                 # or path to your venv python
+DRY_RUN=false
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=true
+  shift || true
+fi
 
-# Which GPUs to use per job (indices or empty for CPU)
-GPU_DEBUG=0
-GPU_LOFO_DET=1
-GPU_LOFO_CLS=2
-# ----------------------------------------
+DATE_TAG="${DATE_TAG:-$(date +%Y%m%d)}"
+OUT_ROOT="outputs/publication_${DATE_TAG}"
+RAW_DIR="$OUT_ROOT/raw_data"
+FIG_DIR="$OUT_ROOT/figures"
+TAB_DIR="$OUT_ROOT/tables"
+LOG_DIR="$OUT_ROOT/logs"
+CKPT_DIR="$OUT_ROOT/checkpoints"
 
-mkdir -p "$LOG_DIR" "configs/overrides" "$RUN_DIR"
+mkdir -p "$RAW_DIR" "$FIG_DIR" "$TAB_DIR" "$LOG_DIR" "$CKPT_DIR"
 
-# Create override configs that inherit the originals but write to subdirs.
-cat > configs/overrides/debug.yaml <<'YAML'
-defaults: [../meta_train/small_cpu_debug.yaml]
-logging:
-  output_dir: __RUN_DIR__/debug
-YAML
+echo "[run_all] Outputs -> $OUT_ROOT"
 
-cat > configs/overrides/lofo_detection.yaml <<'YAML'
-defaults: [../meta_train/lofo_detection.yaml]
-logging:
-  output_dir: __RUN_DIR__/lofo_detection
-YAML
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 
-cat > configs/overrides/lofo_classification.yaml <<'YAML'
-defaults: [../meta_train/lofo_classification.yaml]
-logging:
-  output_dir: __RUN_DIR__/lofo_classification
-YAML
+if [[ "$DRY_RUN" == "false" ]]; then
+  bash scripts/download_datasets.sh ./data
+else
+  echo "[run_all] Dry run – skipping dataset downloads"
+fi
 
-# Patch in the actual RUN_DIR path
-for f in configs/overrides/*.yaml; do
-  sed -i.bak "s|__RUN_DIR__|$RUN_DIR|g" "$f" && rm -f "$f.bak"
-done
+YOLO_CMD=(python train_maestro_yolo.py --output-root outputs --date-tag "$DATE_TAG" --no-resume)
+if [[ "$DRY_RUN" == "true" ]]; then
+  YOLO_CMD+=(--dry-run)
+fi
+"${YOLO_CMD[@]}"
 
-# Helper to launch a tmux session bound to one GPU (or CPU if empty)
-# Usage: launch_tmux <session_name> <gpu_id_or_empty> "<command>" "<log_file>"
-launch_tmux () {
-  local sess="$1"
-  local gpu="$2"
-  local cmd="$3"
-  local log="$4"
+TRANSFER_CMD=(python scripts/run_large_transfer.py --output-root outputs --date-tag "$DATE_TAG")
+if [[ "$DRY_RUN" == "true" ]]; then
+  TRANSFER_CMD+=(--dry-run)
+fi
+"${TRANSFER_CMD[@]}"
 
-  if [[ -n "${gpu}" ]]; then
-    cmd="CUDA_VISIBLE_DEVICES=${gpu} ${cmd}"
-  else
-    cmd="CUDA_VISIBLE_DEVICES= ${cmd}"
+BASELINE_CONFIG="configs/meta_train/small_cpu_debug.yaml"
+if [[ -f "$BASELINE_CONFIG" ]]; then
+  METHODS=(ppo uniform easy_to_hard greedy bandit_linucb bandit_thompson pbt bohb)
+  for METHOD in "${METHODS[@]}"; do
+    CMD=(python scripts/run_comparative.py --config "$BASELINE_CONFIG" --method "$METHOD" --output-dir "$RAW_DIR/baseline_${METHOD}")
+    if [[ "$DRY_RUN" == "true" ]]; then
+      CMD+=(--seed 0)
+    fi
+    "${CMD[@]}" | tee "$LOG_DIR/baseline_${METHOD}.log"
+  done
+else
+  echo "[run_all] Baseline config $BASELINE_CONFIG not found; skipping"
+fi
+
+if [[ "$DRY_RUN" == "false" ]]; then
+  python scripts/run_ablation.py --config "$BASELINE_CONFIG" | tee "$LOG_DIR/ablation.log"
+  python scripts/generate_ood_grid.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/ood_grid.log"
+  python scripts/run_n_invariance.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/n_invariance.log"
+  if [[ -f "$RAW_DIR/n_invariance.json" ]]; then
+    RAW_DIR_ENV="$RAW_DIR" python - <<'PY'
+import csv
+import json
+import os
+from pathlib import Path
+
+root = Path(os.environ["RAW_DIR_ENV"])
+json_path = root / "n_invariance.json"
+data = json.loads(json_path.read_text())
+csv_path = root / "n_invariance.csv"
+with csv_path.open("w", newline="", encoding="utf-8") as handle:
+    writer = csv.DictWriter(handle, fieldnames=list(data.keys()))
+    writer.writeheader()
+    writer.writerow(data)
+PY
   fi
+else
+  python scripts/run_ablation.py --config "$BASELINE_CONFIG" --dry-run | tee "$LOG_DIR/ablation.log"
+  echo "[run_all] Dry run – skipping OOD grid and N-invariance sweeps" | tee "$LOG_DIR/ood_grid.log"
+  echo "[run_all] Dry run – skipping N-invariance computation" | tee "$LOG_DIR/n_invariance.log"
+fi
 
-  # Pipe both stdout and stderr to log (and keep interactive output in tmux).
-  cmd="${cmd} 2>&1 | tee -a '${log}'"
+FIG_CMD=(python scripts/make_publication_figures.py --out "$OUT_ROOT")
+TAB_CMD=(python scripts/generate_tables.py --out "$OUT_ROOT")
+if [[ "$DRY_RUN" == "true" ]]; then
+  FIG_CMD+=(--dry-run)
+  TAB_CMD+=(--dry-run)
+fi
+"${FIG_CMD[@]}" | tee "$LOG_DIR/figures.log"
+"${TAB_CMD[@]}" | tee "$LOG_DIR/tables.log"
 
-  tmux new-session -d -s "${sess}" "echo '>>> $(date) :: ${sess} starting'; ${cmd}; \
-    echo '>>> $(date) :: ${sess} finished' | tee -a '${log}'; sleep 2"
-}
-
-echo "RUN_DIR: $RUN_DIR"
-echo "Logs:    $LOG_DIR"
-echo
-
-# Helper to compute the checkpoint path:
-# run_meta_train writes to: <output_dir>/<run.id>/policy.pt
-RUN_ID_DEBUG="debug_run"
-RUN_ID_LOFO_DET="lofo_detection"
-RUN_ID_LOFO_CLS="lofo_classification"
-CKPT_DEBUG="$RUN_DIR/debug/$RUN_ID_DEBUG/policy.pt"
-CKPT_LOFO_DET="$RUN_DIR/lofo_detection/$RUN_ID_LOFO_DET/policy.pt"
-CKPT_LOFO_CLS="$RUN_DIR/lofo_classification/$RUN_ID_LOFO_CLS/policy.pt"
-
-# 1) Meta-train (quick debug) -> then plot its learning curve
-launch_tmux \
-  "maestro_debug" "$GPU_DEBUG" \
-  "$PY scripts/run_meta_train.py --config configs/overrides/debug.yaml && \
-   $PY scripts/plot_make_figures.py --run-dir '$RUN_DIR/debug/$RUN_ID_DEBUG'" \
-  "$LOG_DIR/meta_train_debug.log"
-
-# 2) LOFO: train on classification+NER, eval held-out detection
-launch_tmux \
-  "maestro_lofo_det" "$GPU_LOFO_DET" \
-  "$PY scripts/run_meta_train.py --config configs/overrides/lofo_detection.yaml && \
-   $PY scripts/run_eval.py --config configs/overrides/lofo_detection.yaml --steps 10 --checkpoint '$CKPT_LOFO_DET'" \
-  "$LOG_DIR/lofo_detection.log"
-
-# 3) LOFO: classification variant
-launch_tmux \
-  "maestro_lofo_cls" "$GPU_LOFO_CLS" \
-  "$PY scripts/run_meta_train.py --config configs/overrides/lofo_classification.yaml && \
-   $PY scripts/run_eval.py --config configs/overrides/lofo_classification.yaml --steps 10 --checkpoint '$CKPT_LOFO_CLS'" \
-  "$LOG_DIR/lofo_classification.log"
-
-# 4) Markov diagnostics (uses the debug config; runs fast)
-launch_tmux \
-  "maestro_markov" "$GPU_DEBUG" \
-  "$PY scripts/run_markov_diag.py --config configs/overrides/debug.yaml" \
-  "$LOG_DIR/markov_diag.log"
-
-echo "Launched sessions:"
-tmux ls | sed 's/^/  /' || true
-echo
-echo "Attach with:   tmux attach -t maestro_debug   (or *_lofo_det / *_lofo_cls / maestro_markov)"
-echo "Artifacts in:  $RUN_DIR"
-echo "Logs in:       $LOG_DIR"
+echo "[run_all] Pipeline complete"

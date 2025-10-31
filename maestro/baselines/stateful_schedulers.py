@@ -8,6 +8,19 @@ from typing import Dict, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
+@dataclass
+class PBTConfig:
+    population_size: int = 4
+    exploit_interval: int = 20
+    perturb_scale: float = 0.15
+
+
+@dataclass
+class BOHBConfig:
+    random_trials: int = 5
+    top_k: int = 3
+    bandwidth: float = 20.0
+
 
 BaselineAction = Tuple[Dict[str, np.ndarray], torch.Tensor, torch.Tensor, Dict[str, float]]
 
@@ -264,6 +277,119 @@ class ThompsonSamplingScheduler(BaselineScheduler):
         self.beta[self._last_choice] += 1.0 - acc
 
 
+class PopulationBasedTrainingScheduler(BaselineScheduler):
+    """Population-based training baseline for curriculum control."""
+
+    def __init__(
+        self,
+        dataset_names: Sequence[str],
+        config: BaselineConfig,
+        pbt_config: Optional[PBTConfig] = None,
+        seed: int = 0,
+    ) -> None:
+        super().__init__(dataset_names, config)
+        self.pbt_config = pbt_config or PBTConfig()
+        self._rng = np.random.default_rng(seed)
+        self._population = [self._sample_candidate() for _ in range(self.pbt_config.population_size)]
+        self._active_index = 0
+        self._updates_since_exploit = 0
+
+    def _sample_candidate(self) -> Dict[str, np.ndarray]:
+        mixture = self._rng.dirichlet(np.ones(self.num_datasets, dtype=np.float64)).astype(np.float32)
+        eta = float(self._rng.uniform(*self.config.eta_bounds))
+        usage = float(np.clip(self.config.default_usage + self._rng.normal(0.0, 0.05), 0.05, 0.9))
+        return {"mixture": mixture, "eta": eta, "usage": usage, "score": 0.0}
+
+    def start_episode(self, observation, descriptors, dataset_metrics=None) -> None:  # type: ignore[override]
+        super().start_episode(observation, descriptors, dataset_metrics)
+        for candidate in self._population:
+            candidate["score"] = 0.0
+        self._updates_since_exploit = 0
+
+    def act(self, observation, descriptors):  # type: ignore[override]
+        idx = self.step_index % len(self._population)
+        self._active_index = idx
+        candidate = self._population[idx]
+        return self._build_action(
+            candidate["mixture"],
+            eta_override=candidate["eta"],
+            usage_override=candidate["usage"],
+        )
+
+    def update(self, reward: float, info: Dict[str, float]) -> None:  # type: ignore[override]
+        super().update(reward, info)
+        candidate = self._population[self._active_index]
+        candidate["score"] += float(reward)
+        self._updates_since_exploit += 1
+        if self._updates_since_exploit >= self.pbt_config.exploit_interval:
+            self._exploit_and_explore()
+            self._updates_since_exploit = 0
+
+    def _exploit_and_explore(self) -> None:
+        scores = np.array([cand["score"] for cand in self._population])
+        order = np.argsort(-scores)
+        top_half = order[: max(1, len(order) // 2)]
+        bottom_half = order[len(order) // 2 :]
+        for idx in bottom_half:
+            source = self._population[int(self._rng.choice(top_half))]
+            cloned = {
+                "mixture": self._mutate_mixture(source["mixture"].copy()),
+                "eta": self._mutate_scalar(source["eta"], self.config.eta_bounds),
+                "usage": float(np.clip(self._mutate_scalar(source["usage"], (0.05, 0.9)), 0.05, 0.9)),
+                "score": 0.0,
+            }
+            self._population[idx] = cloned
+
+    def _mutate_mixture(self, mixture: np.ndarray) -> np.ndarray:
+        noise = self._rng.normal(0.0, self.pbt_config.perturb_scale, size=mixture.shape)
+        mixture = np.clip(mixture + noise, 1e-3, None)
+        mixture /= mixture.sum()
+        return mixture.astype(np.float32)
+
+    def _mutate_scalar(self, value: float, bounds: Sequence[float]) -> float:
+        perturbed = value * float(1.0 + self._rng.normal(0.0, self.pbt_config.perturb_scale))
+        return float(np.clip(perturbed, bounds[0], bounds[1]))
+
+
+class BOHBScheduler(BaselineScheduler):
+    """BOHB-style scheduler sampling mixtures from a KDE over top performers."""
+
+    def __init__(
+        self,
+        dataset_names: Sequence[str],
+        config: BaselineConfig,
+        bohb_config: Optional[BOHBConfig] = None,
+        seed: int = 0,
+    ) -> None:
+        super().__init__(dataset_names, config)
+        self.bohb_config = bohb_config or BOHBConfig()
+        self._rng = np.random.default_rng(seed)
+        self._history: list[Dict[str, np.ndarray | float]] = []
+        self._pending: Optional[Dict[str, np.ndarray | float]] = None
+
+    def act(self, observation, descriptors):  # type: ignore[override]
+        if len(self._history) < self.bohb_config.random_trials:
+            mixture = self._rng.dirichlet(np.ones(self.num_datasets, dtype=np.float64)).astype(np.float32)
+        else:
+            top = sorted(self._history, key=lambda entry: float(entry["score"]), reverse=True)[
+                : self.bohb_config.top_k
+            ]
+            mean = np.mean([entry["mixture"] for entry in top], axis=0)
+            mixture = self._rng.dirichlet(mean * self.bohb_config.bandwidth + 1e-3).astype(np.float32)
+        eta = float(self._rng.uniform(*self.config.eta_bounds))
+        usage = float(np.clip(self.config.default_usage + self._rng.normal(0.0, 0.05), 0.05, 0.9))
+        self._pending = {"mixture": mixture, "eta": eta, "usage": usage, "score": 0.0}
+        return self._build_action(mixture, eta_override=eta, usage_override=usage)
+
+    def update(self, reward: float, info: Dict[str, float]) -> None:  # type: ignore[override]
+        super().update(reward, info)
+        if self._pending is None:
+            return
+        self._pending["score"] = float(self._pending.get("score", 0.0) + reward)
+        self._history.append(self._pending)
+        self._pending = None
+
+
 def create_scheduler(
     method: str,
     dataset_names: Sequence[str],
@@ -290,4 +416,16 @@ def create_scheduler(
         return LinUCBScheduler(dataset_names, config)
     if method in {"bandit_thompson", "thompson"}:
         return ThompsonSamplingScheduler(dataset_names, config)
+    if method == "pbt":
+        kwargs = method_kwargs or {}
+        seed = int(kwargs.get("seed", 0))
+        cfg_kwargs = {k: kwargs[k] for k in ("population_size", "exploit_interval", "perturb_scale") if k in kwargs}
+        pbt_cfg = PBTConfig(**cfg_kwargs) if cfg_kwargs else None
+        return PopulationBasedTrainingScheduler(dataset_names, config, pbt_config=pbt_cfg, seed=seed)
+    if method == "bohb":
+        kwargs = method_kwargs or {}
+        seed = int(kwargs.get("seed", 0))
+        cfg_kwargs = {k: kwargs[k] for k in ("random_trials", "top_k", "bandwidth") if k in kwargs}
+        bohb_cfg = BOHBConfig(**cfg_kwargs) if cfg_kwargs else None
+        return BOHBScheduler(dataset_names, config, bohb_config=bohb_cfg, seed=seed)
     raise ValueError(f"Unknown baseline method: {method}")
