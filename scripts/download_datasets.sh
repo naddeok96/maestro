@@ -94,32 +94,79 @@ echo "[*] Preparing PASCAL VOC 2007 + 2012 (optional)"
 if [[ "$USE_VOC" == "true" ]]; then
   mkdir -p voc && cd voc
 
-  # Prefer pjreddie mirror (fast), then fall back to Oxford if needed.
-  download() {
-    local out="$1"; shift
-    for u in "$@"; do
-      echo "[*] Trying $u"
-      if wget -c -O "$out" "$u"; then
+  # robust downloader with multiple mirrors + validation
+  download_voc() {
+    local outfile="$1"; shift
+    local urls=("$@")
+
+    # if already have a plausible file, validate and keep
+    if [[ -f "$outfile" ]]; then
+      if [[ $(stat -c%s "$outfile" 2>/dev/null || echo 0) -gt 10000000 ]] && tar -tf "$outfile" >/dev/null 2>&1; then
+        echo "[ok] Using existing $outfile"
         return 0
+      else
+        echo "[!] $outfile exists but looks invalid; removing and redownloading"
+        rm -f "$outfile"
       fi
-      echo "[!] Failed: $u"
+    fi
+
+    for u in "${urls[@]}"; do
+      echo "[*] Trying $u"
+      if [[ "$u" =~ ^https?://pjreddie\.com/ ]]; then
+        # pjreddie sometimes returns HTML; use curl -L with a browser UA
+        if curl -fL --retry 3 --retry-delay 2 \
+             -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36" \
+             -o "$outfile" "$u"; then
+          :
+        else
+          echo "[!] Failed: $u"
+          continue
+        fi
+      else
+        if ! wget -c -O "$outfile" "$u"; then
+          echo "[!] Failed: $u"
+          continue
+        fi
+      fi
+
+      # validate: size + tar list
+      local sz
+      sz=$(stat -c%s "$outfile" 2>/dev/null || echo 0)
+      if [[ "$sz" -le 10000000 ]]; then
+        echo "[!] Downloaded $outfile is too small ($sz bytes); likely HTML. Discarding."
+        rm -f "$outfile"
+        continue
+      fi
+      if ! tar -tf "$outfile" >/dev/null 2>&1; then
+        echo "[!] $outfile failed tar validation; discarding."
+        rm -f "$outfile"
+        continue
+      fi
+
+      echo "[ok] Fetched valid $outfile"
+      return 0
     done
     return 1
   }
 
-  [[ -f VOCtrainval_06-Nov-2007.tar ]] || download VOCtrainval_06-Nov-2007.tar \
+  # Mirrors in priority order: DeepAI → pjreddie → Oxford
+  download_voc VOCtrainval_06-Nov-2007.tar \
+    https://data.deepai.org/VOCtrainval_06-Nov-2007.tar \
     https://pjreddie.com/media/files/VOCtrainval_06-Nov-2007.tar \
     http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtrainval_06-Nov-2007.tar
 
-  [[ -f VOCtest_06-Nov-2007.tar ]] || download VOCtest_06-Nov-2007.tar \
+  download_voc VOCtest_06-Nov-2007.tar \
+    https://data.deepai.org/VOCtest_06-Nov-2007.tar \
     https://pjreddie.com/media/files/VOCtest_06-Nov-2007.tar \
     http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtest_06-Nov-2007.tar
 
-  [[ -f VOCtrainval_11-May-2012.tar ]] || download VOCtrainval_11-May-2012.tar \
+  download_voc VOCtrainval_11-May-2012.tar \
+    https://data.deepai.org/VOCtrainval_11-May-2012.tar \
     https://pjreddie.com/media/files/VOCtrainval_11-May-2012.tar \
     http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar
 
-  for t in *.tar; do
+  # Extract only after validation
+  for t in VOCtrainval_06-Nov-2007.tar VOCtest_06-Nov-2007.tar VOCtrainval_11-May-2012.tar; do
     echo "[*] Extracting $t"
     tar -xf "$t"
   done
@@ -128,6 +175,7 @@ if [[ "$USE_VOC" == "true" ]]; then
 else
   echo "[i] USE_VOC=false — skipping VOC download"
 fi
+
 
 ###############################################################################
 # YOLO conversion (COCO/LVIS/VOC/target → YOLO)
