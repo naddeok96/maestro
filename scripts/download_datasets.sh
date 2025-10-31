@@ -94,14 +94,30 @@ echo "[*] Preparing PASCAL VOC 2007 + 2012 (optional)"
 if [[ "$USE_VOC" == "true" ]]; then
   mkdir -p voc && cd voc
 
-  for url in \
-    http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtrainval_06-Nov-2007.tar \
-    http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtest_06-Nov-2007.tar \
+  # Prefer pjreddie mirror (fast), then fall back to Oxford if needed.
+  download() {
+    local out="$1"; shift
+    for u in "$@"; do
+      echo "[*] Trying $u"
+      if wget -c -O "$out" "$u"; then
+        return 0
+      fi
+      echo "[!] Failed: $u"
+    done
+    return 1
+  }
+
+  [[ -f VOCtrainval_06-Nov-2007.tar ]] || download VOCtrainval_06-Nov-2007.tar \
+    https://pjreddie.com/media/files/VOCtrainval_06-Nov-2007.tar \
+    http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtrainval_06-Nov-2007.tar
+
+  [[ -f VOCtest_06-Nov-2007.tar ]] || download VOCtest_06-Nov-2007.tar \
+    https://pjreddie.com/media/files/VOCtest_06-Nov-2007.tar \
+    http://host.robots.ox.ac.uk/pascal/VOC/voc2007/VOCtest_06-Nov-2007.tar
+
+  [[ -f VOCtrainval_11-May-2012.tar ]] || download VOCtrainval_11-May-2012.tar \
+    https://pjreddie.com/media/files/VOCtrainval_11-May-2012.tar \
     http://host.robots.ox.ac.uk/pascal/VOC/voc2012/VOCtrainval_11-May-2012.tar
-  do
-    fname="$(basename "$url")"
-    [[ -f "$fname" ]] || wget -c "$url"
-  done
 
   for t in *.tar; do
     echo "[*] Extracting $t"
