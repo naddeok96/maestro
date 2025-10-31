@@ -33,6 +33,7 @@ class MaestroEnvConfig:
     weight_decay: float
     momentum: float
     seed: int = 0
+    ablations: Dict[str, bool] | None = None
 
 
 class MaestroEnv(gym.Env):
@@ -57,7 +58,9 @@ class MaestroEnv(gym.Env):
             device=self.device,
         )
         self.observation_builder = ObservationBuilder(
-            config.datasets, float(config.initial_budget)
+            config.datasets,
+            float(config.initial_budget),
+            ablations=config.ablations,
         )
         self.current_step = 0
         self.previous_macro = 0.0
@@ -139,7 +142,11 @@ class MaestroEnv(gym.Env):
             device=self.device,
         )
         self.budget.reset()
-        self.observation_builder.reset()
+        self.observation_builder = ObservationBuilder(
+            self.config.datasets,
+            float(self.config.initial_budget),
+            ablations=self.config.ablations,
+        )
         self.current_step = 0
         self.previous_macro = 0.0
         observation = self._initial_observation()

@@ -47,6 +47,7 @@ def build_env_for_task(config: Dict[str, Any], task_cfg: str, seed: int) -> Maes
         weight_decay=config["optimizer"]["weight_decay"],
         momentum=config["optimizer"]["momentum"],
         seed=seed,
+        ablations=config.get("ablations"),
     )
     return MaestroEnv(env_config)
 

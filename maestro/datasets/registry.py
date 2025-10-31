@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 import yaml
 
@@ -28,12 +28,36 @@ def _load_yaml(path: Path) -> Dict[str, object]:
         return yaml.safe_load(handle)
 
 
-def build_from_config(path: str, seed: int) -> List[DatasetSpec]:
+def build_from_config(
+    path: str,
+    seed: int,
+    *,
+    num_datasets: Optional[int] = None,
+    overrides: Optional[Dict[str, object]] = None,
+) -> List[DatasetSpec]:
+    """Build dataset specifications from a YAML configuration.
+
+    Parameters
+    ----------
+    path:
+        Path to the YAML configuration file.
+    seed:
+        Base random seed used for dataset materialization.
+    num_datasets:
+        Optional override for the number of datasets to instantiate.
+    overrides:
+        Optional mapping of configuration keys to override inside the
+        ``datasets`` section (e.g., ``noise`` or ``imbalance``).
+    """
     cfg = _load_yaml(Path(path))
     task = cfg["task_family"]
-    datasets_cfg = cfg["datasets"]
+    datasets_cfg = dict(cfg["datasets"])
+    if num_datasets is not None:
+        datasets_cfg["count"] = int(num_datasets)
+    if overrides:
+        datasets_cfg.update(overrides)
     specs: List[DatasetSpec] = []
-    for index in range(datasets_cfg.get("count", 1)):
+    for index in range(int(datasets_cfg.get("count", 1))):
         dataset_seed = seed + index * 17
         name = f"{task}_{index}"
         if task == "classification":
