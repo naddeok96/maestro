@@ -40,7 +40,8 @@ def estimate_flops(model: torch.nn.Module, input_shape: tuple[int, ...]) -> floa
                     x = torch.randint(0, vocab, (1, *input_res), dtype=torch.long)
                 else:
                     x = torch.randn(1, *input_res)
-                return (x,)
+                # Return a tensor (not a tuple) because this ptflops build calls model(batch)
+                return x
 
             with contextlib.redirect_stdout(None):
                 macs, _ = get_model_complexity_info(
