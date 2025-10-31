@@ -20,7 +20,7 @@ from maestro.utils.wandb import init_wandb_run, log_checkpoint, log_metrics
 DEFAULT_DATASETS: Dict[str, Dict[str, str]] = {
     "coco": {"yaml": "configs/datasets/coco.yaml"},
     "lvis": {"yaml": "configs/datasets/lvis.yaml"},
-    "crowdhuman": {"yaml": "configs/datasets/crowdhuman.yaml"},
+    "voc": {"yaml": "configs/datasets/voc.yaml"},
     "target": {"yaml": "configs/datasets/target.yaml"},
 }
 
