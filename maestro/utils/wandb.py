@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import numbers
 from pathlib import Path
-from typing import Any, Mapping, MutableMapping, Optional
+from typing import Any, Mapping, Optional
 
 try:  # pragma: no cover - import guard for optional dependency
     import wandb
@@ -93,15 +93,13 @@ def log_metrics(metrics: Mapping[str, Any]) -> None:
 
 def log_checkpoint(path: Path, base_path: Path | None = None) -> None:
     """Upload a checkpoint to the active W&B run, if possible."""
-    if wandb.run is None:
+    if wandb.run is None or not path.exists():
         return
-    if not path.exists():
-        return
-    save_kwargs: MutableMapping[str, Any] = {"filename": str(path)}
-    if base_path is not None:
-        save_kwargs["base_path"] = str(base_path)
     try:
-        wandb.save(**save_kwargs)
+        if base_path is not None:
+            wandb.save(str(path), base_path=str(base_path))
+        else:
+            wandb.save(str(path))
     except Exception:
         # Ignore failures so that training does not crash in offline mode.
         pass
