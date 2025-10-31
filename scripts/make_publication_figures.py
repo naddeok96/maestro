@@ -12,6 +12,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+CAPTIONS = {
+    "fig1": "Learning curves showing macro-accuracy and macro-mAP versus training steps across tasks.",
+    "fig2": "One-step prediction R² demonstrates approximate Markovity of the learned latent features.",
+    "fig3": "Macro metrics across train/test population sizes highlight N-invariance generalisation patterns.",
+    "fig4": "Heatmap of macro metrics summarising robustness across synthetic noise and imbalance levels.",
+    "fig5": "Ablation deltas quantify the contribution of each architectural component to macro performance.",
+}
+
 
 def _ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -132,6 +140,14 @@ def fig5_ablation(df: pd.DataFrame, outdir: Path) -> Iterable[Path]:
     return outputs
 
 
+def _write_caption(outdir: Path, fig_key: str) -> Path:
+    if fig_key not in CAPTIONS:
+        raise KeyError(f"No caption defined for {fig_key}")
+    caption_path = outdir / f"{fig_key}_caption.txt"
+    caption_path.write_text(CAPTIONS[fig_key], encoding="utf-8")
+    return caption_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create publication figures")
     parser.add_argument("--out", type=Path, required=True, help="Output directory")
@@ -147,6 +163,8 @@ def main() -> None:
     try:
         curves_df = _load_csv(raw_dir / "learning_curves.csv")
         generated["fig1"] = [str(p) for p in fig1_learning_curves(curves_df, outdir)]
+        if generated["fig1"]:
+            generated["fig1_caption"] = str(_write_caption(outdir, "fig1"))
     except FileNotFoundError as exc:
         if not args.dry_run:
             raise
@@ -155,6 +173,8 @@ def main() -> None:
     try:
         markov_df = pd.read_json(raw_dir / "markov_diag.jsonl", lines=True)
         generated["fig2"] = [str(p) for p in fig2_markov_diagnostics(markov_df, outdir)]
+        if generated["fig2"]:
+            generated["fig2_caption"] = str(_write_caption(outdir, "fig2"))
     except (FileNotFoundError, ValueError) as exc:
         if not args.dry_run:
             raise
@@ -163,6 +183,8 @@ def main() -> None:
     try:
         n_df = _load_csv(raw_dir / "n_invariance.csv")
         generated["fig3"] = [str(p) for p in fig3_n_invariance(n_df, outdir)]
+        if generated["fig3"]:
+            generated["fig3_caption"] = str(_write_caption(outdir, "fig3"))
     except FileNotFoundError as exc:
         if not args.dry_run:
             raise
@@ -171,6 +193,8 @@ def main() -> None:
     try:
         ood_df = _load_csv(raw_dir / "ood_grid.csv")
         generated["fig4"] = [str(p) for p in fig4_ood_heatmap(ood_df, outdir)]
+        if generated["fig4"]:
+            generated["fig4_caption"] = str(_write_caption(outdir, "fig4"))
     except FileNotFoundError as exc:
         if not args.dry_run:
             raise
@@ -179,6 +203,8 @@ def main() -> None:
     try:
         ablation_df = _load_csv(raw_dir / "ablation.csv")
         generated["fig5"] = [str(p) for p in fig5_ablation(ablation_df, outdir)]
+        if generated["fig5"]:
+            generated["fig5_caption"] = str(_write_caption(outdir, "fig5"))
     except FileNotFoundError as exc:
         if not args.dry_run:
             raise

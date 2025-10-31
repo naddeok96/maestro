@@ -22,6 +22,11 @@ def _format_ci(mean: float, ci: Tuple[float, float]) -> str:
     return f"{mean:.3f} [{ci[0]:.3f}, {ci[1]:.3f}]"
 
 
+def _format_with_significance(mean: float, ci: Tuple[float, float], p: float) -> str:
+    stars = "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else ""
+    return f"{mean:.3f}{stars} [{ci[0]:.3f}, {ci[1]:.3f}]"
+
+
 def _summarise_metric(df: pd.DataFrame, group_cols: Iterable[str]) -> pd.DataFrame:
     summary = df.groupby(list(group_cols))
     result = summary["value"].agg(["mean", "std", "count"]).reset_index()
@@ -35,7 +40,6 @@ def _bootstrap_deltas(df: pd.DataFrame, pivot_cols: Iterable[str]) -> pd.DataFra
         return pd.DataFrame()
     best_method = pivot.mean(axis=0).idxmax()
     results = []
-    baseline = pivot[best_method].dropna()
     for column in pivot.columns:
         aligned = pivot[[best_method, column]].dropna()
         if aligned.empty:
@@ -80,19 +84,35 @@ def generate_table(
     if not resolved_groups:
         raise KeyError(f"No valid grouping columns found in {raw_path}")
     summary = _summarise_metric(df, resolved_groups)
+    pivot_cols: Tuple[str, ...] = tuple(resolved_groups[:2])
+    significance_lookup: Dict[Tuple[object, ...], float] = {}
+    if "seed" in df.columns and pivot_cols:
+        delta = _bootstrap_deltas(df, pivot_cols)
+        if not delta.empty and "comparison" in delta.columns and "p_value" in delta.columns:
+            for _, delta_row in delta.iterrows():
+                comparison = delta_row["comparison"]
+                if isinstance(comparison, tuple):
+                    key = comparison
+                elif isinstance(comparison, (list, np.ndarray, pd.Index)):
+                    key = tuple(comparison)
+                else:
+                    key = (comparison,)
+                significance_lookup[key] = float(delta_row["p_value"])
+    else:
+        delta = pd.DataFrame()
     def _ci_from_row(row: pd.Series) -> str:
         mean = float(row["mean_value"])
         std_val = float(row["std_value"]) if not pd.isna(row["std_value"]) else 0.0
         count = float(row["count"])
         stderr = std_val / np.sqrt(max(1.0, count))
         ci = (mean - 1.96 * stderr, mean + 1.96 * stderr)
+        if significance_lookup:
+            key = tuple(row[col] for col in pivot_cols)
+            if key in significance_lookup:
+                return _format_with_significance(mean, ci, significance_lookup[key])
         return _format_ci(mean, ci)
 
     summary["ci"] = summary.apply(_ci_from_row, axis=1)
-    if "seed" in df.columns and len(resolved_groups) >= 2:
-        delta = _bootstrap_deltas(df, resolved_groups[:2])
-    else:
-        delta = pd.DataFrame()
     table_path = outdir / f"table_{name}.csv"
     tex_path = outdir / f"table_{name}.tex"
     display = summary.drop(columns=["std_value", "count"]).rename(columns={"mean_value": "mean"})
