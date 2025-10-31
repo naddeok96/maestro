@@ -5,23 +5,72 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+import yaml
 
+from maestro.baselines import create_scheduler
 from maestro.policy import MaestroPolicy, MaestroPolicyConfig
 from maestro.probes import DummyYOLO, build_model, estimate_probes_with_val
 from maestro.utils.wandb import init_wandb_run, log_checkpoint, log_metrics
+from maestro.yolo.mix_builder import SourceDS, build_mixed_segment
 
 
-DEFAULT_DATASETS: Dict[str, Dict[str, str]] = {
-    "coco": {"yaml": "configs/datasets/coco.yaml"},
-    "lvis": {"yaml": "configs/datasets/lvis.yaml"},
-    "voc": {"yaml": "configs/datasets/voc.yaml"},
-    "target": {"yaml": "configs/datasets/target.yaml"},
+VOC_CANONICAL_NAMES = [
+    "aeroplane",
+    "bicycle",
+    "bird",
+    "boat",
+    "bottle",
+    "bus",
+    "car",
+    "cat",
+    "chair",
+    "cow",
+    "diningtable",
+    "dog",
+    "horse",
+    "motorbike",
+    "person",
+    "pottedplant",
+    "sheep",
+    "sofa",
+    "train",
+    "tvmonitor",
+]
+
+SMALL_DATASET_DEFAULTS = ["clipart1k", "watercolor2k", "comic2k", "pennfudan", "kitti"]
+
+DEFAULT_DATASETS: Dict[str, Dict[str, object]] = {
+    "clipart1k": {
+        "yaml": "configs/datasets/clipart1k.yaml",
+        "fallback_names": VOC_CANONICAL_NAMES,
+    },
+    "watercolor2k": {
+        "yaml": "configs/datasets/watercolor2k.yaml",
+        "fallback_names": ["bicycle", "bird", "car", "cat", "dog", "person"],
+    },
+    "comic2k": {
+        "yaml": "configs/datasets/comic2k.yaml",
+        "fallback_names": ["bicycle", "bird", "car", "cat", "dog", "person"],
+    },
+    "pennfudan": {
+        "yaml": "configs/datasets/pennfudan.yaml",
+        "fallback_names": ["person"],
+    },
+    "kitti": {
+        "yaml": "configs/datasets/kitti.yaml",
+        "fallback_names": ["car", "pedestrian", "cyclist"],
+    },
+    "coco": {"yaml": "configs/datasets/coco.yaml", "fallback_names": []},
+    "lvis": {"yaml": "configs/datasets/lvis.yaml", "fallback_names": []},
+    "voc": {"yaml": "configs/datasets/voc.yaml", "fallback_names": VOC_CANONICAL_NAMES},
+    "target": {"yaml": "configs/datasets/target.yaml", "fallback_names": []},
 }
 
 
@@ -39,6 +88,8 @@ class RunConfig:
     datasets: List[str]
     dry_run: bool
     resume: bool
+    method: str
+    label_space: str
 
 
 def _update_metadata(out_dir: Path, record: Dict[str, object]) -> None:
@@ -64,44 +115,78 @@ def _append_segment_csv(csv_path: Path, rows: Iterable[Dict[str, object]]) -> No
         writer.writerows(rows)
 
 
-def _distribute_steps(weights: Dict[str, float], total_steps: int) -> Dict[str, int]:
-    keys = list(weights.keys())
-    if total_steps <= 0:
-        return {k: 0 for k in keys}
-    raw = np.array([max(0.0, weights[k]) for k in keys], dtype=np.float64)
-    if raw.sum() <= 0:
-        raw[:] = 1.0
-    raw /= raw.sum()
-    steps = np.floor(raw * total_steps).astype(int)
-    shortfall = total_steps - int(steps.sum())
-    if shortfall > 0:
-        order = np.argsort(-raw)
-        for idx in order[:shortfall]:
-            steps[idx] += 1
-    # Ensure that non-zero weights receive at least one step
-    for i, key in enumerate(keys):
-        if raw[i] > 0 and steps[i] == 0:
-            steps[i] = 1
-    # Normalise so we do not exceed the budget
-    excess = int(steps.sum()) - total_steps
-    if excess > 0:
-        order = np.argsort(raw)
-        for idx in order:
-            if excess <= 0:
-                break
-            if steps[idx] > 0:
-                steps[idx] -= 1
-                excess -= 1
-    return {k: int(steps[i]) for i, k in enumerate(keys)}
-
-
-def _resolve_dataset_names(datasets: Iterable[str]) -> Dict[str, Dict[str, str]]:
+def _resolve_dataset_names(datasets: Iterable[str]) -> Dict[str, Dict[str, object]]:
     resolved = {}
     for name in datasets:
         if name not in DEFAULT_DATASETS:
             raise KeyError(f"Unknown dataset '{name}'. Known options: {sorted(DEFAULT_DATASETS)}")
-        resolved[name] = DEFAULT_DATASETS[name]
+        cfg = DEFAULT_DATASETS[name]
+        yaml_path = cfg.get("yaml")
+        yaml_str = str(yaml_path) if isinstance(yaml_path, Path) else str(yaml_path)
+        resolved[name] = {
+            "yaml": yaml_str,
+            "fallback_names": list(cfg.get("fallback_names", [])),
+        }
     return resolved
+
+
+def _load_names_from_yaml(yaml_path: Path, fallback: Sequence[str]) -> List[str]:
+    if yaml_path.exists():
+        try:
+            data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            data = {}
+        names = data.get("names") if isinstance(data, dict) else None
+        if isinstance(names, dict):
+            try:
+                items = sorted(names.items(), key=lambda item: int(item[0]))
+            except Exception:
+                items = sorted(names.items(), key=lambda item: str(item[0]))
+            return [str(value) for _, value in items]
+        if isinstance(names, list):
+            return [str(value) for value in names]
+    return [str(value) for value in fallback]
+
+
+def _resolve_train_dirs(yaml_path: Path) -> Tuple[Optional[Path], Optional[Path]]:
+    if not yaml_path.exists():
+        return None, None
+    try:
+        data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        data = {}
+    if not isinstance(data, dict):
+        return None, None
+
+    base = data.get("path", "")
+    base_path = Path(base) if base else yaml_path.parent
+    if not base_path.is_absolute():
+        base_path = (yaml_path.parent / base_path).resolve()
+    else:
+        base_path = base_path.resolve()
+
+    train_entry = data.get("train", "images/train")
+    train_path = Path(train_entry)
+    if not train_path.is_absolute():
+        train_path = (base_path / train_path).resolve()
+    else:
+        train_path = train_path.resolve()
+
+    if not train_path.exists() or not train_path.is_dir():
+        return None, None
+
+    try:
+        rel = train_path.relative_to(base_path)
+    except ValueError:
+        rel = Path()
+
+    if rel.parts and rel.parts[0] == "images":
+        labels_rel = Path("labels", *rel.parts[1:])
+        labels_dir = (base_path / labels_rel).resolve()
+    else:
+        labels_dir = train_path.parent / "labels"
+
+    return train_path, labels_dir
 
 
 def _load_resume_checkpoint(run_dir: Path) -> Tuple[int, Path | None]:
@@ -125,7 +210,12 @@ def main() -> None:
     parser.add_argument("--imgsz", type=int, default=896, help="Training/eval image size")
     parser.add_argument("--batch", type=int, default=16, help="Batch size")
     parser.add_argument("--device", default="auto", help="Computation device for YOLO")
-    parser.add_argument("--datasets", nargs="*", default=list(DEFAULT_DATASETS.keys()), help="Datasets to include")
+    parser.add_argument(
+        "--datasets",
+        nargs="*",
+        default=SMALL_DATASET_DEFAULTS,
+        help="Datasets to include in the curriculum",
+    )
     parser.add_argument("--output-root", type=Path, default=Path("outputs"), help="Root output directory")
     parser.add_argument("--date-tag", default=datetime.now(UTC).strftime("%Y%m%d"), help="Date tag for outputs")
     parser.add_argument("--no-resume", action="store_true", help="Start a fresh run even if logs exist")
@@ -134,9 +224,69 @@ def main() -> None:
     parser.add_argument("--max-usage", type=float, default=0.7, help="Upper bound for usage fraction")
     parser.add_argument("--min-lr-scale", type=float, default=0.5)
     parser.add_argument("--max-lr-scale", type=float, default=1.5)
+    parser.add_argument(
+        "--label-space",
+        choices=["overlap_only", "union_full"],
+        default="overlap_only",
+        help="Strategy for combining label spaces across datasets",
+    )
+    parser.add_argument(
+        "--method",
+        choices=[
+            "maestro",
+            "uniform",
+            "easy_to_hard",
+            "greedy",
+            "linucb",
+            "thompson",
+            "pbt",
+            "bohb",
+        ],
+        default="maestro",
+        help="Curriculum strategy to use",
+    )
     args = parser.parse_args()
 
     datasets = _resolve_dataset_names(args.datasets)
+    dataset_names = list(datasets.keys())
+
+    source_entries: Dict[str, SourceDS] = {}
+    for name in dataset_names:
+        cfg = datasets[name]
+        yaml_path = Path(str(cfg["yaml"]))
+        fallback_raw = cfg.get("fallback_names", [])
+        fallback_seq: Sequence[str]
+        if isinstance(fallback_raw, Sequence) and not isinstance(fallback_raw, (str, bytes)):
+            fallback_seq = [str(item) for item in fallback_raw]
+        else:
+            fallback_seq = []
+        names_list = _load_names_from_yaml(yaml_path, fallback_seq)
+        cfg["names"] = names_list
+        images_dir, labels_dir = _resolve_train_dirs(yaml_path)
+        if images_dir is None or labels_dir is None:
+            print(f"[!] Skipping {name}: could not resolve YOLO train/label directories from {yaml_path}")
+            continue
+        source_entries[name] = SourceDS(name=name, images_dir=images_dir, labels_dir=labels_dir, names=names_list)
+
+    sources = [source_entries[name] for name in dataset_names if name in source_entries]
+    if not sources:
+        raise RuntimeError("No datasets with available YOLO folders were found for mixing.")
+    schedule_names = [source.name for source in sources]
+
+    donor_big_names: Optional[List[List[str]]] = None
+    if args.label_space == "union_full":
+        donor_big_names = []
+        for donor in ("coco", "lvis"):
+            cfg = DEFAULT_DATASETS.get(donor)
+            if not cfg:
+                continue
+            donor_yaml = Path(str(cfg.get("yaml")))
+            fallback = cfg.get("fallback_names", [])
+            names_list = _load_names_from_yaml(donor_yaml, fallback)
+            if names_list:
+                donor_big_names.append(names_list)
+        if not donor_big_names:
+            donor_big_names = None
     date_dir = args.output_root / f"publication_{args.date_tag}"
     run_dir = date_dir / "yolo_track"
     log_dir = run_dir / "logs"
@@ -145,6 +295,8 @@ def main() -> None:
     ckpt_dir = date_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     (date_dir / "logs").mkdir(parents=True, exist_ok=True)
+    mix_root = run_dir / "mixes"
+    mix_root.mkdir(parents=True, exist_ok=True)
 
     resume = not args.no_resume
     start_segment, checkpoint_path = _load_resume_checkpoint(run_dir) if resume else (1, None)
@@ -164,7 +316,21 @@ def main() -> None:
         min_usage=args.min_usage,
         max_usage=args.max_usage,
     )
-    policy = MaestroPolicy(policy_cfg)
+    method = args.method.lower()
+    policy: Optional[MaestroPolicy] = None
+    scheduler = None
+    if method == "maestro":
+        policy = MaestroPolicy(policy_cfg)
+    else:
+        default_usage = float(np.clip((args.min_usage + args.max_usage) * 0.5, 0.0, 1.0))
+        scheduler = create_scheduler(
+            method,
+            schedule_names,
+            (args.min_lr_scale, args.max_lr_scale),
+            args.segments,
+            usage=default_usage,
+        )
+        scheduler.start_episode({}, np.zeros((len(schedule_names), 1), dtype=np.float32))
 
     log_path = log_dir / "train.jsonl"
     if start_segment == 1 and log_path.exists() and not resume:
@@ -188,6 +354,8 @@ def main() -> None:
         datasets=list(datasets.keys()),
         dry_run=bool(args.dry_run),
         resume=bool(resume),
+        method=args.method,
+        label_space=args.label_space,
     )
     _update_metadata(date_dir, {"config": asdict(run_config)})
 
@@ -205,40 +373,82 @@ def main() -> None:
             probes = {
                 name: estimate_probes_with_val(model, cfg["yaml"], imgsz=args.imgsz, dry_run=args.dry_run)
                 for name, cfg in datasets.items()
+                if name in schedule_names
             }
-            weights, eta_scale, usage = policy.get_action(probes, budget_remaining, segment, args.segments)
+            if method == "maestro":
+                if policy is None:
+                    raise RuntimeError("Maestro policy is not initialised")
+                weights_schedule, eta_scale, usage = policy.get_action(
+                    probes, budget_remaining, segment, args.segments
+                )
+            else:
+                if scheduler is None:
+                    raise RuntimeError("Baseline scheduler not initialised")
+                observation = {name: np.zeros(1, dtype=np.float32) for name in schedule_names}
+                descriptors = np.zeros((len(schedule_names), 1), dtype=np.float32)
+                action, _, _, _ = scheduler.act(observation, descriptors)
+                mixture = action.get("w")
+                eta_array = action.get("eta")
+                usage_array = action.get("u")
+                mixture = mixture if mixture is not None else np.ones(len(schedule_names), dtype=np.float32)
+                weights_schedule = {
+                    name: float(mixture[i]) for i, name in enumerate(schedule_names)
+                }
+                eta_scale = float(eta_array[0]) if eta_array is not None else 1.0
+                usage = float(usage_array[0]) if usage_array is not None else float(np.clip(args.min_usage, 0.0, 1.0))
+            weights_full = {
+                name: float(weights_schedule.get(name, 0.0)) for name in datasets.keys()
+            }
             if budget_remaining <= 0:
                 print("No budget remaining; stopping early.")
                 break
-            steps_total = max(1, int(usage * max(1, budget_remaining) / max(args.batch, 1)))
-            steps_by_dataset = _distribute_steps(weights, steps_total)
-            lr_segment = args.base_lr * eta_scale
-            print(
-                f"[segment {segment}] weights={weights} eta_scale={eta_scale:.3f} usage={usage:.3f} steps={steps_total} lr={lr_segment:.5f}"
+            steps_total = max(1, int(round(usage * max(1, budget_remaining) / max(1, args.batch))))
+            desired_images = max(1, steps_total * args.batch)
+            num_images = min(budget_remaining, desired_images)
+
+            mix_dir, _ = build_mixed_segment(
+                out_dir=mix_root,
+                segment=segment,
+                sources=sources,
+                donor_big_names=donor_big_names,
+                weights={s.name: float(weights_schedule.get(s.name, 0.0)) for s in sources},
+                total_images=num_images,
+                label_space_mode=args.label_space,
+                rng_seed=segment,
             )
 
-            for dataset_name, steps in steps_by_dataset.items():
-                if steps <= 0:
-                    continue
-                yaml_path = datasets[dataset_name]["yaml"]
-                print(f"  -> training {dataset_name} for {steps} micro-epochs")
-                for _ in range(steps):
-                    overrides = dict(
-                        data=yaml_path,
-                        imgsz=args.imgsz,
-                        epochs=1,
-                        batch=args.batch,
-                        device=args.device,
-                        workers=0,
-                        lr0=lr_segment,
-                        resume=True,
-                        project=str(run_dir),
-                        name="exp",
-                        save=False,
-                        val=False,
-                        verbose=False,
-                    )
-                    model.train(**overrides)
+            manifest_lines = [
+                line.strip()
+                for line in (mix_dir / "train.txt").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            actual_images = len(manifest_lines)
+            if actual_images == 0:
+                print(f"[segment {segment}] No samples available after mixing; skipping training")
+                budget_remaining = max(0, budget_remaining - actual_images)
+                continue
+
+            effective_steps = max(1, math.ceil(actual_images / max(1, args.batch)))
+            lr_segment = args.base_lr * eta_scale
+            print(
+                f"[segment {segment}] weights={weights_schedule} eta_scale={eta_scale:.3f} usage={usage:.3f} images={actual_images} lr={lr_segment:.5f}"
+            )
+
+            model.train(
+                data=str(mix_dir / "yolo_mix.yaml"),
+                imgsz=args.imgsz,
+                epochs=1,
+                batch=args.batch,
+                device=args.device,
+                workers=0,
+                lr0=lr_segment,
+                resume=True,
+                project=str(run_dir),
+                name="exp",
+                save=False,
+                val=False,
+                verbose=False,
+            )
 
             per_dataset_metrics: Dict[str, Dict[str, float]] = {}
             for dataset_name, cfg in datasets.items():
@@ -248,10 +458,10 @@ def main() -> None:
                 per_dataset_metrics[dataset_name] = {"mAP": map_value, "mAP50": map50_value}
 
             macro_map = float(np.mean([stats["mAP"] for stats in per_dataset_metrics.values()]))
-            next_budget = max(0, budget_remaining - steps_total * args.batch)
+            next_budget = max(0, budget_remaining - actual_images)
             record = {
                 "segment": segment,
-                "weights": weights,
+                "weights": weights_full,
                 "eta_scale": eta_scale,
                 "usage": usage,
                 "budget_remaining": next_budget,
@@ -270,6 +480,9 @@ def main() -> None:
                         "metric": "mAP",
                         "value": stats["mAP"],
                         "macro_mAP": macro_map,
+                        "eta_scale": eta_scale,
+                        "usage": usage,
+                        "weight": float(weights_full.get(dataset_name, 0.0)),
                     }
                 )
                 rows.append(
@@ -279,11 +492,14 @@ def main() -> None:
                         "metric": "mAP50",
                         "value": stats["mAP50"],
                         "macro_mAP": macro_map,
+                        "eta_scale": eta_scale,
+                        "usage": usage,
+                        "weight": float(weights_full.get(dataset_name, 0.0)),
                     }
                 )
             _append_segment_csv(csv_path, rows)
 
-            weight_metrics = {f"weights/{name}": float(value) for name, value in weights.items()}
+            weight_metrics = {f"weights/{name}": float(value) for name, value in weights_full.items()}
             dataset_metrics_payload = {
                 f"mAP/{name}": stats["mAP"] for name, stats in per_dataset_metrics.items()
             }
@@ -293,7 +509,8 @@ def main() -> None:
             log_metrics(
                 {
                     "segment": segment,
-                    "steps_total": steps_total,
+                    "steps_total": effective_steps,
+                    "images_used": actual_images,
                     "macro_mAP": macro_map,
                     "eta_scale": float(eta_scale),
                     "usage": float(usage),
@@ -310,8 +527,21 @@ def main() -> None:
                 model.save(str(ckpt_path))
             log_checkpoint(ckpt_path, ckpt_dir)
 
+            if scheduler is not None:
+                scheduler.update(
+                    float(macro_map),
+                    {
+                        "dataset_metrics": {
+                            name: {"accuracy": stats["mAP"]}
+                            for name, stats in per_dataset_metrics.items()
+                        }
+                    },
+                )
+
             budget_remaining = next_budget
-            print(f"[segment {segment}] macro mAP={macro_map:.4f} budget_remaining={budget_remaining}")
+            print(
+                f"[segment {segment}] macro mAP={macro_map:.4f} budget_remaining={budget_remaining}"
+            )
             if budget_remaining <= 0:
                 print("Budget exhausted – stopping early.")
                 break
