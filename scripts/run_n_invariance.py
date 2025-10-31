@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
@@ -16,6 +17,7 @@ from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
 from maestro.eval.n_invariance import evaluate_permutations
 from maestro.policy.ppo import PPOConfig, PPOTeacher, TeacherPolicy
 from maestro.utils.config import load_config
+from maestro.utils.wandb import init_wandb_run, log_metrics
 
 
 def _build_env(
@@ -81,37 +83,57 @@ def main() -> None:
     )
     ppo = PPOTeacher(policy, PPOConfig(**config.get("ppo", {})))
 
-    if args.checkpoint and args.checkpoint.exists():
-        state = torch.load(args.checkpoint, map_location="cpu")
-        policy.load_state_dict(state.get("policy", state))
-    else:
-        for episode in range(max(0, args.train_episodes)):
-            env = _build_env(
-                config,
-                task_cfg,
-                seed + episode * 31,
-                num_datasets=args.train_num_datasets,
-            )
-            try:
-                ppo.train_episode(env, config["horizon"])
-            finally:
-                env.close()
-
-    eval_env = _build_env(
-        config,
-        task_cfg,
-        seed + 999,
-        num_datasets=args.eval_num_datasets,
+    run_name = f"n_invariance_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    wandb_run = init_wandb_run(
+        run_name,
+        config={
+            "config": config,
+            "task_cfg": task_cfg,
+            "train_num_datasets": args.train_num_datasets,
+            "eval_num_datasets": args.eval_num_datasets,
+            "train_episodes": args.train_episodes,
+            "permutations": args.permutations,
+        },
     )
+
     try:
-        rng = np.random.default_rng(seed + 123)
-        n = args.eval_num_datasets
-        perms: List[List[int]] = [
-            rng.permutation(n).tolist() for _ in range(args.permutations)
-        ]
-        stats = evaluate_permutations(eval_env, policy, perms)
+        if args.checkpoint and args.checkpoint.exists():
+            state = torch.load(args.checkpoint, map_location="cpu")
+            policy.load_state_dict(state.get("policy", state))
+        else:
+            for episode in range(max(0, args.train_episodes)):
+                env = _build_env(
+                    config,
+                    task_cfg,
+                    seed + episode * 31,
+                    num_datasets=args.train_num_datasets,
+                )
+                try:
+                    train_stats = ppo.train_episode(env, config["horizon"])
+                finally:
+                    env.close()
+                train_stats = {f"train/{k}": v for k, v in train_stats.items()}
+                train_stats["train/episode"] = episode
+                log_metrics(train_stats)
+
+        eval_env = _build_env(
+            config,
+            task_cfg,
+            seed + 999,
+            num_datasets=args.eval_num_datasets,
+        )
+        try:
+            rng = np.random.default_rng(seed + 123)
+            n = args.eval_num_datasets
+            perms: List[List[int]] = [
+                rng.permutation(n).tolist() for _ in range(args.permutations)
+            ]
+            stats = evaluate_permutations(eval_env, policy, perms)
+        finally:
+            eval_env.close()
+        log_metrics({f"eval/{k}": v for k, v in stats.items()})
     finally:
-        eval_env.close()
+        wandb_run.finish()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     output = {

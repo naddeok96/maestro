@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List
 
@@ -18,6 +19,7 @@ from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
 from maestro.eval.ood_grid import evaluate_ood_grid
 from maestro.policy.ppo import PPOConfig, PPOTeacher, TeacherPolicy
 from maestro.utils.config import load_config
+from maestro.utils.wandb import init_wandb_run, log_metrics, log_checkpoint
 
 
 def _build_env(
@@ -101,52 +103,78 @@ def main() -> None:
     noise_vals = _parse_list(args.noise)
     imbalance_vals = _parse_list(args.imbalance)
 
-    rows = []
-    for i, noise in enumerate(noise_vals):
-        for j, imbalance in enumerate(imbalance_vals):
-            env = _build_env(
-                config,
-                task_cfg,
-                seed + 1000 + i * 100 + j,
-                overrides={"noise": float(noise), "imbalance": float(imbalance)},
-            )
-            try:
-                stats = evaluate_ood_grid([env], policy, steps=args.steps)
-            finally:
-                env.close()
-            rows.append(
-                {
-                    "noise": float(noise),
-                    "imbalance": float(imbalance),
-                    "mean_macro": stats["mean_macro"],
-                    "std_macro": stats["std_macro"],
-                }
-            )
+    run_name = f"ood_grid_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    wandb_run = init_wandb_run(
+        run_name,
+        config={
+            "config": config,
+            "task_cfg": task_cfg,
+            "steps": args.steps,
+            "noise_values": noise_vals,
+            "imbalance_values": imbalance_vals,
+        },
+    )
 
-    df = pd.DataFrame(rows).sort_values(["noise", "imbalance"]).reset_index(drop=True)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = args.output_dir / "ood_grid.csv"
-    df.to_csv(csv_path, index=False)
-
-    pivot = df.pivot(index="noise", columns="imbalance", values="mean_macro")
-    plt.figure(figsize=(6, 4))
-    plt.imshow(pivot.values, aspect="auto", origin="lower")
-    plt.xticks(
-        ticks=range(len(pivot.columns)),
-        labels=[f"{col:.2f}" for col in pivot.columns],
-    )
-    plt.yticks(
-        ticks=range(len(pivot.index)),
-        labels=[f"{row:.2f}" for row in pivot.index],
-    )
-    plt.xlabel("imbalance")
-    plt.ylabel("noise")
-    plt.title("OOD Macro Accuracy")
-    plt.colorbar()
-    plt.tight_layout()
     heatmap_path = args.output_dir / "ood_heatmap.png"
-    plt.savefig(heatmap_path, dpi=150)
-    plt.close()
+    rows = []
+    try:
+        for i, noise in enumerate(noise_vals):
+            for j, imbalance in enumerate(imbalance_vals):
+                env = _build_env(
+                    config,
+                    task_cfg,
+                    seed + 1000 + i * 100 + j,
+                    overrides={"noise": float(noise), "imbalance": float(imbalance)},
+                )
+                try:
+                    stats = evaluate_ood_grid([env], policy, steps=args.steps)
+                finally:
+                    env.close()
+                rows.append(
+                    {
+                        "noise": float(noise),
+                        "imbalance": float(imbalance),
+                        "mean_macro": stats["mean_macro"],
+                        "std_macro": stats["std_macro"],
+                    }
+                )
+                log_metrics(
+                    {
+                        "noise": float(noise),
+                        "imbalance": float(imbalance),
+                        "mean_macro": stats.get("mean_macro", 0.0),
+                        "std_macro": stats.get("std_macro", 0.0),
+                    }
+                )
+
+        df = pd.DataFrame(rows).sort_values(["noise", "imbalance"]).reset_index(drop=True)
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        df.to_csv(csv_path, index=False)
+
+        pivot = df.pivot(index="noise", columns="imbalance", values="mean_macro")
+        plt.figure(figsize=(6, 4))
+        plt.imshow(pivot.values, aspect="auto", origin="lower")
+        plt.xticks(
+            ticks=range(len(pivot.columns)),
+            labels=[f"{col:.2f}" for col in pivot.columns],
+        )
+        plt.yticks(
+            ticks=range(len(pivot.index)),
+            labels=[f"{row:.2f}" for row in pivot.index],
+        )
+        plt.xlabel("imbalance")
+        plt.ylabel("noise")
+        plt.title("OOD Macro Accuracy")
+        plt.colorbar()
+        plt.tight_layout()
+        plt.savefig(heatmap_path, dpi=150)
+        plt.close()
+
+        log_checkpoint(csv_path, args.output_dir)
+        log_checkpoint(heatmap_path, args.output_dir)
+    finally:
+        wandb_run.finish()
 
     print(json.dumps({"csv": str(csv_path), "heatmap": str(heatmap_path)}, indent=2))
 

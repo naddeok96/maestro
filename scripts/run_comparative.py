@@ -19,6 +19,7 @@ from maestro.policy.ppo import PPOConfig, PPOTeacher, TeacherPolicy
 from maestro.utils import RunPaths
 from maestro.utils.config import load_config
 from maestro.utils.logging import MetricsLogger
+from maestro.utils.wandb import init_wandb_run, log_checkpoint, log_metrics
 
 
 METHOD_CHOICES = [
@@ -176,40 +177,50 @@ def run_ppo(
         checkpoint_interval = config.get("run", {}).get("checkpoint_interval", 50)
         checkpoint_path = seed_dir / "policy.pt"
         best_return: Optional[float] = None
+        run_name = f"ppo_comparative_seed{seed}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+        wandb_run = init_wandb_run(
+            run_name,
+            config={"config": config, "seed": seed, "method": "ppo"},
+        )
 
-        for episode in tqdm(range(total_episodes), desc=f"seed={seed}"):
-            task_cfg = tasks[episode % len(tasks)]
-            env_seed = seed + episode * 31
-            env = build_env_for_task(config, task_cfg, env_seed)
-            stats = ppo.train_episode(env, config["horizon"])
-            env.close()
-            stats.update(
-                {
-                    "episode": episode,
-                    "task": Path(task_cfg).stem,
-                    "seed": seed,
-                    "method": "ppo",
-                }
-            )
-            logger.log_row(stats)
-            current_return = stats["return"]
-            is_best = best_return is None or current_return > best_return
-            if is_best:
-                best_return = current_return
-            should_checkpoint = (episode + 1) % checkpoint_interval == 0 or is_best
-            if should_checkpoint:
-                torch.save(
+        try:
+            for episode in tqdm(range(total_episodes), desc=f"seed={seed}"):
+                task_cfg = tasks[episode % len(tasks)]
+                env_seed = seed + episode * 31
+                env = build_env_for_task(config, task_cfg, env_seed)
+                stats = ppo.train_episode(env, config["horizon"])
+                env.close()
+                stats.update(
                     {
-                        "policy": policy.state_dict(),
-                        "optim": ppo.optim.state_dict(),
-                        "config": config,
-                        "episode": episode + 1,
-                        "best_return": best_return,
-                        "lambda_cmdp": ppo.lambda_cmdp,
-                    },
-                    checkpoint_path,
+                        "episode": episode,
+                        "task": Path(task_cfg).stem,
+                        "seed": seed,
+                        "method": "ppo",
+                    }
                 )
-        logger.flush_json()
+                logger.log_row(stats)
+                log_metrics(stats)
+                current_return = stats["return"]
+                is_best = best_return is None or current_return > best_return
+                if is_best:
+                    best_return = current_return
+                should_checkpoint = (episode + 1) % checkpoint_interval == 0 or is_best
+                if should_checkpoint:
+                    torch.save(
+                        {
+                            "policy": policy.state_dict(),
+                            "optim": ppo.optim.state_dict(),
+                            "config": config,
+                            "episode": episode + 1,
+                            "best_return": best_return,
+                            "lambda_cmdp": ppo.lambda_cmdp,
+                        },
+                        checkpoint_path,
+                    )
+                    log_checkpoint(checkpoint_path, seed_dir)
+        finally:
+            logger.flush_json()
+            wandb_run.finish()
 
 
 def parse_args() -> argparse.Namespace:

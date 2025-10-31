@@ -16,6 +16,8 @@ from .schedules import OptimizerSettings, clamp_learning_rate
 from .seeding import seed_everything
 from .serialization import load_checkpoint, save_checkpoint
 
+from .wandb import init_wandb_run, log_checkpoint, log_metrics
+
 __all__ = [
     "ExponentialMovingAverage",
     "GradientProjector",
@@ -33,4 +35,7 @@ __all__ = [
     "seed_everything",
     "load_checkpoint",
     "save_checkpoint",
+    "init_wandb_run",
+    "log_checkpoint",
+    "log_metrics",
 ]

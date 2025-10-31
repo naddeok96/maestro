@@ -11,3 +11,4 @@ gymnasium>=0.28
 pyyaml>=6.0
 ultralytics>=8.2.0
 opencv-python>=4.7
+wandb>=0.16
