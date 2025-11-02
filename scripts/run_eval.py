@@ -39,6 +39,12 @@ def main() -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, default=None)
     parser.add_argument("--steps", type=int, default=1)
+    parser.add_argument(
+        "--csv-out",
+        type=Path,
+        default=None,
+        help="Optional path to write CSV summary (task,metric,value)",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -74,6 +80,22 @@ def main() -> None:
             "return": total_reward,
         }
         env.close()
+    if args.csv_out is not None:
+        import csv
+
+        args.csv_out.parent.mkdir(parents=True, exist_ok=True)
+        with args.csv_out.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["task", "metric", "value"])
+            writer.writeheader()
+            for task, stats in results.items():
+                writer.writerow(
+                    {
+                        "task": task,
+                        "metric": "macro_acc",
+                        "value": stats.get("macro_accuracy", 0.0),
+                    }
+                )
+
     print(results)
 
 
