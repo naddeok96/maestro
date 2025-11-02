@@ -1,7 +1,4 @@
-path: ./data
-train: coco/train2017
-val: coco/val2017
+path: ./data/lvis
+train: images/train
+val: images/val
 names: []
-annotations:
-  train: lvis/lvis_v1_train.json
-  val: lvis/lvis_v1_val.json
