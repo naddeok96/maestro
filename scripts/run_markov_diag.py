@@ -39,7 +39,20 @@ def build_env(config: Dict[str, Any], task_cfg: str, seed: int) -> MaestroEnv:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Markov diagnostics")
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=(
+            "Optional output directory for persisted diagnostics. "
+            "Defaults to outputs/publication_<DATE>/raw_data"
+        ),
+    )
     args = parser.parse_args()
+
+    date_tag = datetime.now().strftime("%Y%m%d")
+    default_root = Path("outputs") / f"publication_{date_tag}"
+    raw_dir = (args.out or default_root) / "raw_data"
 
     config = load_config(args.config)
     policy = TeacherPolicy(
@@ -82,6 +95,13 @@ def main() -> None:
             env.close()
     finally:
         wandb_run.finish()
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    with (raw_dir / "markov_diag.jsonl").open("w", encoding="utf-8") as fh:
+        import json
+
+        for task, diagnostics in diagnostics_per_task.items():
+            fh.write(json.dumps({"task": task, **diagnostics}) + "\n")
+
     print(diagnostics_per_task)
 
 

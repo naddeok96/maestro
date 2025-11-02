@@ -57,12 +57,34 @@ if [[ -f "$BASELINE_CONFIG" ]]; then
     fi
     "${CMD[@]}" | tee "$LOG_DIR/baseline_${METHOD}.log"
   done
+
+  if [[ "$DRY_RUN" == "false" ]]; then
+    PLOT_ARGS=()
+    for METHOD in "${METHODS[@]}"; do
+      if [[ -d "$RAW_DIR/baseline_${METHOD}" ]]; then
+        PLOT_ARGS+=(--run "${METHOD}=$RAW_DIR/baseline_${METHOD}")
+      fi
+    done
+    if (( ${#PLOT_ARGS[@]} > 0 )); then
+      COMP_PLOTS_DIR="$OUT_ROOT/comparative_plots/$(date +%Y%m%d-%H%M%S)"
+      python scripts/plot_comparative.py "${PLOT_ARGS[@]}" --output-dir "$COMP_PLOTS_DIR" | tee "$LOG_DIR/comparative_plots.log"
+    else
+      echo "[run_all] No comparative baselines found for plotting"
+    fi
+    cp -f "$OUT_ROOT/comparative_plots"/*/table4_metrics.csv "$RAW_DIR/baselines.csv" 2>/dev/null || true
+    if [[ ! -f "$RAW_DIR/baselines.csv" ]]; then
+      : > "$RAW_DIR/baselines.csv"
+    fi
+  else
+    : > "$RAW_DIR/baselines.csv"
+  fi
 else
   echo "[run_all] Baseline config $BASELINE_CONFIG not found; skipping"
 fi
 
 if [[ "$DRY_RUN" == "false" ]]; then
-  python scripts/run_ablation.py --config "$BASELINE_CONFIG" | tee "$LOG_DIR/ablation.log"
+  python scripts/run_ablation_suite.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/ablation.log"
+  cp -f "$RAW_DIR/ablation_results.csv" "$RAW_DIR/ablation.csv" 2>/dev/null || true
   python scripts/generate_ood_grid.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/ood_grid.log"
   python scripts/run_n_invariance.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/n_invariance.log"
   if [[ -f "$RAW_DIR/n_invariance.json" ]]; then
@@ -83,9 +105,15 @@ with csv_path.open("w", newline="", encoding="utf-8") as handle:
 PY
   fi
 else
+  : > "$RAW_DIR/ablation.csv"
   python scripts/run_ablation.py --config "$BASELINE_CONFIG" --dry-run | tee "$LOG_DIR/ablation.log"
   echo "[run_all] Dry run – skipping OOD grid and N-invariance sweeps" | tee "$LOG_DIR/ood_grid.log"
   echo "[run_all] Dry run – skipping N-invariance computation" | tee "$LOG_DIR/n_invariance.log"
+fi
+
+if [[ -f "$BASELINE_CONFIG" ]]; then
+  python scripts/run_eval.py --config configs/meta_train/lofo_classification.yaml --steps 10 --csv-out "$RAW_DIR/lofo.csv" | tee "$LOG_DIR/lofo_eval.log"
+  python scripts/run_eval.py --config "$BASELINE_CONFIG" --steps 10 --csv-out "$RAW_DIR/main_results.csv" | tee "$LOG_DIR/main_eval.log"
 fi
 
 FIG_CMD=(python scripts/make_publication_figures.py --out "$OUT_ROOT")
