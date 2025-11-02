@@ -74,6 +74,29 @@ DEFAULT_DATASETS: Dict[str, Dict[str, object]] = {
 }
 
 
+def _resolve_yaml_path(rel_yaml: str) -> Optional[Path]:
+    """Resolve dataset YAML paths in common MAESTRO locations."""
+
+    rel = Path(rel_yaml)
+    here = Path(__file__).resolve().parent
+    candidates = [
+        rel,
+        Path("data") / rel,
+        here / rel,
+        here / "data" / rel,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def _pretty_path(path: Path | str) -> str:
+    if isinstance(path, Path):
+        return str(path.resolve())
+    return str(path)
+
+
 @dataclass
 class RunConfig:
     """Configuration bundle persisted to ``metadata.json`` for reproducibility."""
@@ -116,13 +139,19 @@ def _append_segment_csv(csv_path: Path, rows: Iterable[Dict[str, object]]) -> No
 
 
 def _resolve_dataset_names(datasets: Iterable[str]) -> Dict[str, Dict[str, object]]:
-    resolved = {}
+    resolved: Dict[str, Dict[str, object]] = {}
     for name in datasets:
         if name not in DEFAULT_DATASETS:
             raise KeyError(f"Unknown dataset '{name}'. Known options: {sorted(DEFAULT_DATASETS)}")
         cfg = DEFAULT_DATASETS[name]
-        yaml_path = cfg.get("yaml")
-        yaml_str = str(yaml_path) if isinstance(yaml_path, Path) else str(yaml_path)
+        rel_yaml = cfg.get("yaml")
+        rel_yaml = str(rel_yaml) if not isinstance(rel_yaml, str) else rel_yaml
+        resolved_path = _resolve_yaml_path(rel_yaml)
+        if resolved_path is None:
+            print(f"[!] Could not find YAML for '{name}' at '{rel_yaml}' or 'data/{rel_yaml}'.")
+            yaml_str = rel_yaml
+        else:
+            yaml_str = _pretty_path(resolved_path)
         resolved[name] = {
             "yaml": yaml_str,
             "fallback_names": list(cfg.get("fallback_names", [])),
@@ -253,14 +282,24 @@ def main() -> None:
     source_entries: Dict[str, SourceDS] = {}
     for name in dataset_names:
         cfg = datasets[name]
-        yaml_path = Path(str(cfg["yaml"]))
+        yaml_candidate = str(cfg["yaml"])
+        yaml_path = Path(yaml_candidate)
+        if not yaml_path.exists():
+            alt_path = _resolve_yaml_path(yaml_candidate)
+            if alt_path is not None:
+                yaml_path = alt_path
         fallback_raw = cfg.get("fallback_names", [])
         fallback_seq: Sequence[str]
         if isinstance(fallback_raw, Sequence) and not isinstance(fallback_raw, (str, bytes)):
             fallback_seq = [str(item) for item in fallback_raw]
         else:
             fallback_seq = []
-        names_list = _load_names_from_yaml(yaml_path, fallback_seq)
+        names_list = (
+            _load_names_from_yaml(yaml_path, fallback_seq)
+            if yaml_path.exists()
+            else list(fallback_seq)
+        )
+        cfg["yaml"] = _pretty_path(yaml_path) if yaml_path.exists() else yaml_candidate
         cfg["names"] = names_list
         images_dir, labels_dir = _resolve_train_dirs(yaml_path)
         if images_dir is None or labels_dir is None:
@@ -281,9 +320,18 @@ def main() -> None:
             cfg = DEFAULT_DATASETS.get(donor)
             if not cfg:
                 continue
-            donor_yaml = Path(str(cfg.get("yaml")))
+            donor_yaml_candidate = str(cfg.get("yaml"))
+            donor_yaml = Path(donor_yaml_candidate)
+            if not donor_yaml.exists():
+                alt_path = _resolve_yaml_path(donor_yaml_candidate)
+                if alt_path is not None:
+                    donor_yaml = alt_path
             fallback = cfg.get("fallback_names", [])
-            donor_names = _load_names_from_yaml(donor_yaml, fallback)
+            donor_names = (
+                _load_names_from_yaml(donor_yaml, fallback)
+                if donor_yaml.exists()
+                else [str(value) for value in fallback]
+            )
             images_dir, labels_dir = _resolve_train_dirs(donor_yaml)
             if images_dir is None or labels_dir is None:
                 continue
@@ -299,14 +347,19 @@ def main() -> None:
     for donor in donor_names_in_mix:
         if donor not in datasets and donor in DEFAULT_DATASETS:
             cfg = DEFAULT_DATASETS[donor]
-            donor_yaml = Path(str(cfg.get("yaml")))
+            donor_yaml_candidate = str(cfg.get("yaml"))
+            donor_yaml = Path(donor_yaml_candidate)
+            if not donor_yaml.exists():
+                alt_path = _resolve_yaml_path(donor_yaml_candidate)
+                if alt_path is not None:
+                    donor_yaml = alt_path
             fallback_raw = cfg.get("fallback_names", [])
             if isinstance(fallback_raw, Sequence) and not isinstance(fallback_raw, (str, bytes)):
                 fallback_seq = [str(item) for item in fallback_raw]
             else:
                 fallback_seq = []
             datasets[donor] = {
-                "yaml": str(donor_yaml),
+                "yaml": _pretty_path(donor_yaml) if donor_yaml.exists() else donor_yaml_candidate,
                 "fallback_names": fallback_seq,
             }
             datasets[donor]["names"] = _load_names_from_yaml(donor_yaml, fallback_seq)
