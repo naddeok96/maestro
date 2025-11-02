@@ -72,6 +72,13 @@ if [[ -f "$BASELINE_CONFIG" ]]; then
       echo "[run_all] No comparative baselines found for plotting"
     fi
     cp -f "$OUT_ROOT/comparative_plots"/*/table4_metrics.csv "$RAW_DIR/baselines.csv" 2>/dev/null || true
+    # learning curves for Fig1
+    python scripts/export_learning_curves.py --out "$RAW_DIR" \
+      --comparative-root "$OUT_ROOT/comparative_plots" || true
+
+    # markov diagnostics for Fig2
+    python scripts/run_markov_diag.py --config "$BASELINE_CONFIG" --out "$OUT_ROOT" \
+      | tee "$LOG_DIR/markov_diag.log"
     if [[ ! -f "$RAW_DIR/baselines.csv" ]]; then
       : > "$RAW_DIR/baselines.csv"
     fi
@@ -85,6 +92,7 @@ fi
 if [[ "$DRY_RUN" == "false" ]]; then
   python scripts/run_ablation_suite.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/ablation.log"
   cp -f "$RAW_DIR/ablation_results.csv" "$RAW_DIR/ablation.csv" 2>/dev/null || true
+  cp -f "$RAW_DIR/ablation_results.csv" "$RAW_DIR/ablations.csv" 2>/dev/null || true
   python scripts/generate_ood_grid.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/ood_grid.log"
   python scripts/run_n_invariance.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/n_invariance.log"
   if [[ -f "$RAW_DIR/n_invariance.json" ]]; then
@@ -106,6 +114,7 @@ PY
   fi
 else
   : > "$RAW_DIR/ablation.csv"
+  : > "$RAW_DIR/ablations.csv"
   python scripts/run_ablation.py --config "$BASELINE_CONFIG" --dry-run | tee "$LOG_DIR/ablation.log"
   echo "[run_all] Dry run – skipping OOD grid and N-invariance sweeps" | tee "$LOG_DIR/ood_grid.log"
   echo "[run_all] Dry run – skipping N-invariance computation" | tee "$LOG_DIR/n_invariance.log"

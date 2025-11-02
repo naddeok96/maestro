@@ -172,7 +172,24 @@ def main() -> None:
 
     try:
         markov_df = pd.read_json(raw_dir / "markov_diag.jsonl", lines=True)
-        generated["fig2"] = [str(p) for p in fig2_markov_diagnostics(markov_df, outdir)]
+        feat_cols = [
+            "r2",
+            "linear_r2",
+            "delta_r2",
+            "mlp_r2",
+            "gru_history_r2",
+            "linear_history_r2",
+            "g_data_r2",
+            "g_model_r2",
+            "g_progress_r2",
+        ]
+        markov_long = markov_df.melt(
+            id_vars=["task"],
+            value_vars=[c for c in feat_cols if c in markov_df.columns],
+            var_name="feature",
+            value_name="r2",
+        )
+        generated["fig2"] = [str(p) for p in fig2_markov_diagnostics(markov_long, outdir)]
         if generated["fig2"]:
             generated["fig2_caption"] = str(_write_caption(outdir, "fig2"))
     except (FileNotFoundError, ValueError) as exc:
@@ -182,6 +199,14 @@ def main() -> None:
 
     try:
         n_df = _load_csv(raw_dir / "n_invariance.csv")
+        if {"train_num_datasets", "eval_num_datasets", "mean_macro"} <= set(n_df.columns):
+            n_df = n_df.rename(
+                columns={
+                    "train_num_datasets": "train_N",
+                    "eval_num_datasets": "test_N",
+                    "mean_macro": "macro_metric",
+                }
+            )
         generated["fig3"] = [str(p) for p in fig3_n_invariance(n_df, outdir)]
         if generated["fig3"]:
             generated["fig3_caption"] = str(_write_caption(outdir, "fig3"))
@@ -192,6 +217,8 @@ def main() -> None:
 
     try:
         ood_df = _load_csv(raw_dir / "ood_grid.csv")
+        if "macro_metric" not in ood_df.columns and "mean_macro" in ood_df.columns:
+            ood_df = ood_df.rename(columns={"mean_macro": "macro_metric"})
         generated["fig4"] = [str(p) for p in fig4_ood_heatmap(ood_df, outdir)]
         if generated["fig4"]:
             generated["fig4_caption"] = str(_write_caption(outdir, "fig4"))
@@ -202,7 +229,52 @@ def main() -> None:
 
     try:
         ablation_df = _load_csv(raw_dir / "ablation.csv")
-        generated["fig5"] = [str(p) for p in fig5_ablation(ablation_df, outdir)]
+        macro_col = "macro_accuracy" if "macro_accuracy" in ablation_df.columns else "value"
+        if macro_col not in ablation_df.columns:
+            raise KeyError("Ablation CSV must contain 'macro_accuracy' or 'value' column")
+        if "flags" in ablation_df.columns:
+            base_candidates = ablation_df[
+                ablation_df["flags"].astype(str).str.strip().isin(
+                    [
+                        "{}",
+                        '{"drop_grad_cosine": false}',
+                        '{"drop_progress_block": false}',
+                        '{"drop_model_block": false}',
+                        '{"drop_data_block": false}',
+                    ]
+                )
+            ][macro_col]
+        else:
+            base_candidates = pd.Series(dtype=float)
+        base_val = (
+            float(base_candidates.iloc[0])
+            if not base_candidates.empty
+            else float(ablation_df[macro_col].max())
+        )
+        if "component" not in ablation_df.columns:
+            if "flags" not in ablation_df.columns:
+                raise KeyError("Ablation CSV requires 'component' or 'flags' column")
+            ablation_df["component"] = ablation_df["flags"].apply(
+                lambda s: "full"
+                if str(s).strip() == "{}"
+                else next(
+                    (
+                        k
+                        for k in [
+                            "drop_grad_cosine",
+                            "drop_progress_block",
+                            "drop_model_block",
+                            "drop_data_block",
+                        ]
+                        if k in str(s)
+                    ),
+                    str(s),
+                )
+            )
+        ablation_df["delta_macro"] = ablation_df[macro_col] - base_val
+        generated["fig5"] = [
+            str(p) for p in fig5_ablation(ablation_df[["component", "delta_macro"]], outdir)
+        ]
         if generated["fig5"]:
             generated["fig5_caption"] = str(_write_caption(outdir, "fig5"))
     except FileNotFoundError as exc:
