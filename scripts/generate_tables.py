@@ -138,11 +138,43 @@ def main() -> None:
     raw_dir = args.raw if args.raw else args.out / "raw_data"
 
     manifest: Dict[str, Dict[str, object]] = {}
+    bpath = raw_dir / "baselines.csv"
+    if bpath.exists():
+        t4 = pd.read_csv(bpath)
+        if {"method", "final_macro"}.issubset(t4.columns):
+            t4_long = t4.rename(columns={"final_macro": "value"}).copy()
+            t4_long["task"] = "aggregate"
+            t4_long["metric"] = "macro_acc"
+            bpath.write_text(t4_long.to_csv(index=False))
+
+    ablation_path = raw_dir / "ablation.csv"
+    if ablation_path.exists():
+        abl = pd.read_csv(ablation_path)
+        if "component" not in abl.columns and "flags" in abl.columns:
+            def _component_from_flags(s: str) -> str:
+                stripped = str(s).strip()
+                if stripped == "{}":
+                    return "full"
+                for key in [
+                    "drop_grad_cosine",
+                    "drop_progress_block",
+                    "drop_model_block",
+                    "drop_data_block",
+                ]:
+                    if key in stripped:
+                        return key
+                return stripped
+
+            abl["component"] = abl["flags"].apply(_component_from_flags)
+        if "value" not in abl.columns and "macro_accuracy" in abl.columns:
+            abl = abl.rename(columns={"macro_accuracy": "value"})
+        ablation_path.write_text(abl.to_csv(index=False))
+
     configs = [
-        ("main", raw_dir / "main_results.csv", ("task", "method"), "Main results (Macro-Acc, AUC)", "tab:main_results"),
-        ("lofo", raw_dir / "lofo.csv", ("held_out", "method"), "Cross-task transfer (LOFO)", "tab:lofo"),
+        ("main", raw_dir / "main_results.csv", ("task",), "Main results (Macro-Acc)", "tab:main_results"),
+        ("lofo", raw_dir / "lofo.csv", ("task",), "Cross-task transfer (LOFO)", "tab:lofo"),
         ("baselines", raw_dir / "baselines.csv", ("task", "method"), "Baseline comparisons", "tab:baselines"),
-        ("ablations", raw_dir / "ablations.csv", ("component", "method",), "Ablation study", "tab:ablations"),
+        ("ablations", raw_dir / "ablation.csv", ("component",), "Ablation study", "tab:ablations"),
     ]
 
     for name, path, group_cols, caption, label in configs:
