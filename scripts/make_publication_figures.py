@@ -71,6 +71,7 @@ def fig2_markov_diagnostics(df: pd.DataFrame, outdir: Path) -> Iterable[Path]:
     ax.bar(sorted_df["feature"], sorted_df["r2"], color="#1f77b4")
     ax.set_ylabel("R²")
     ax.set_title("Markov diagnostics")
+    ax.set_xticks(range(len(sorted_df)))
     ax.set_xticklabels(sorted_df["feature"], rotation=45, ha="right")
     ax.grid(True, axis="y", linestyle="--", alpha=0.3)
     fig.tight_layout()

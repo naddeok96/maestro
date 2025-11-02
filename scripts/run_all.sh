@@ -71,10 +71,15 @@ if [[ -f "$BASELINE_CONFIG" ]]; then
     else
       echo "[run_all] No comparative baselines found for plotting"
     fi
-    cp -f "$OUT_ROOT/comparative_plots"/*/table4_metrics.csv "$RAW_DIR/baselines.csv" 2>/dev/null || true
+    latest_cp_dir="$(ls -td "$OUT_ROOT"/comparative_plots/* 2>/dev/null | head -n1 || true)"
+    if [[ -n "$latest_cp_dir" && -f "$latest_cp_dir/table4_metrics.csv" ]]; then
+      cp -f "$latest_cp_dir/table4_metrics.csv" "$RAW_DIR/baselines.csv"
+    else
+      : > "$RAW_DIR/baselines.csv"
+    fi
     # learning curves for Fig1
     python scripts/export_learning_curves.py --out "$RAW_DIR" \
-      --comparative-root "$OUT_ROOT/comparative_plots" || true
+      --comparative-root "$RAW_DIR" || true
 
     # markov diagnostics for Fig2
     python scripts/run_markov_diag.py --config "$BASELINE_CONFIG" --out "$OUT_ROOT" \
