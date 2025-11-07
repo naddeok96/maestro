@@ -12,13 +12,19 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
+import torch
 import yaml
 
 from maestro.baselines import create_scheduler
-from maestro.policy import MaestroPolicy, MaestroPolicyConfig
+from maestro.policy import MaestroPolicy, MaestroPolicyConfig, TeacherPolicy
 from maestro.probes import DummyYOLO, build_model, estimate_probes_with_val
 from maestro.utils.wandb import init_wandb_run, log_checkpoint, log_metrics
-from maestro.yolo.mix_builder import SourceDS, build_mixed_segment, build_mixed_val
+from maestro.yolo.mix_builder import (
+    SourceDS,
+    build_mixed_segment,
+    build_mixed_val,
+    compute_pools_and_canonical,
+)
 
 
 VOC_CANONICAL_NAMES = [
@@ -72,6 +78,51 @@ DEFAULT_DATASETS: Dict[str, Dict[str, object]] = {
     "voc": {"yaml": "configs/datasets/voc.yaml", "fallback_names": VOC_CANONICAL_NAMES},
     "target": {"yaml": "configs/datasets/target.yaml", "fallback_names": []},
 }
+
+
+def _descriptor_from_probe(stats: Dict[str, float], size_log: float) -> np.ndarray:
+    """Map YOLO probe statistics to the 8-D teacher descriptor space."""
+
+    return np.array(
+        [
+            float(stats.get("loss_mean", 0.0)),
+            float(stats.get("loss_iqr", 0.0)),
+            float(stats.get("entropy_mean", 0.0)),
+            0.0,  # expected calibration error unavailable for YOLO probes
+            float(stats.get("grad_norm_log", 0.0)),
+            0.0,  # gradient cosine placeholder
+            0.0,  # log effective rank placeholder
+            float(size_log),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _build_teacher_observation(descriptors: np.ndarray) -> Dict[str, np.ndarray]:
+    """Construct the observation dictionary expected by ``TeacherPolicy``."""
+
+    if descriptors.size == 0:
+        g_data = np.zeros(8, dtype=np.float32)
+    else:
+        g_data = descriptors.mean(axis=0).astype(np.float32)
+    g_model = np.zeros(6, dtype=np.float32)
+    g_progress = np.zeros(11, dtype=np.float32)
+    return {"g_data": g_data, "g_model": g_model, "g_progress": g_progress}
+
+
+def _load_teacher_policy(
+    checkpoint_path: Path, eta_bounds: Tuple[float, float]
+) -> TeacherPolicy:
+    """Load a PPO teacher checkpoint onto CPU for inference."""
+
+    policy = TeacherPolicy(
+        descriptor_dim=8, g_model_dim=6, g_progress_dim=11, eta_bounds=eta_bounds
+    )
+    state = torch.load(checkpoint_path, map_location="cpu")
+    state_dict = state.get("policy", state)
+    policy.load_state_dict(state_dict)
+    policy.eval()
+    return policy
 
 
 def _resolve_yaml_path(rel_yaml: str) -> Optional[Path]:
@@ -274,7 +325,27 @@ def main() -> None:
         default="maestro",
         help="Curriculum strategy to use",
     )
+    parser.add_argument(
+        "--teacher-ckpt",
+        type=Path,
+        default=None,
+        help="Path to a pretrained PPO teacher checkpoint (policy.pt)",
+    )
+    parser.add_argument(
+        "--teacher-deterministic",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use deterministic teacher actions (default: true; pass --no-teacher-deterministic to sample)",
+    )
     args = parser.parse_args()
+
+    teacher_ckpt_path: Optional[Path] = None
+    if args.teacher_ckpt is not None:
+        teacher_ckpt_path = Path(args.teacher_ckpt)
+        if not teacher_ckpt_path.exists():
+            raise FileNotFoundError(
+                f"Teacher checkpoint not found at {teacher_ckpt_path}"
+            )
 
     datasets = _resolve_dataset_names(args.datasets)
     dataset_names = list(datasets.keys())
@@ -363,6 +434,14 @@ def main() -> None:
                 "fallback_names": fallback_seq,
             }
             datasets[donor]["names"] = _load_names_from_yaml(donor_yaml, fallback_seq)
+
+    precomputed_pools, precomputed_canonical = compute_pools_and_canonical(
+        sources,
+        donor_big_names,
+        label_space_mode=args.label_space,
+    )
+    pool_sizes = {name: len(precomputed_pools.get(name, [])) for name in schedule_names}
+
     date_dir = args.output_root / f"publication_{args.date_tag}"
     run_dir = date_dir / "yolo_track"
     log_dir = run_dir / "logs"
@@ -393,16 +472,34 @@ def main() -> None:
         max_usage=args.max_usage,
     )
     method = args.method.lower()
+    eta_bounds = (args.min_lr_scale, args.max_lr_scale)
+    teacher_policy: Optional[TeacherPolicy] = None
+    if teacher_ckpt_path is not None:
+        if method != "maestro":
+            raise ValueError(
+                "--teacher-ckpt can only be used with --method maestro"
+            )
+        teacher_policy = _load_teacher_policy(teacher_ckpt_path, eta_bounds)
+        teacher_meta = {
+            "teacher_ckpt_path": str(teacher_ckpt_path.resolve()),
+            "eta_bounds": list(eta_bounds),
+            "deterministic": bool(args.teacher_deterministic),
+            "descriptor_mapping": "v1:nll_mean,nll_iqr,entropy,ece=0,log_grad,cos=0,log_eff_rank=0,size=log(pool+1)",
+        }
+        (log_dir / "teacher_meta.json").write_text(
+            json.dumps(teacher_meta, indent=2), encoding="utf-8"
+        )
+
     policy: Optional[MaestroPolicy] = None
     scheduler = None
-    if method == "maestro":
+    if method == "maestro" and teacher_policy is None:
         policy = MaestroPolicy(policy_cfg)
-    else:
+    elif method != "maestro":
         default_usage = float(np.clip((args.min_usage + args.max_usage) * 0.5, 0.0, 1.0))
         scheduler = create_scheduler(
             method,
             schedule_names,
-            (args.min_lr_scale, args.max_lr_scale),
+            eta_bounds,
             args.segments,
             usage=default_usage,
         )
@@ -469,7 +566,49 @@ def main() -> None:
                 for donor_name in donor_names_in_mix:
                     if donor_name not in probes:
                         probes[donor_name] = dict(default_stats)
-            if method == "maestro":
+            if teacher_policy is not None:
+                descriptor_rows = []
+                for dataset_name in schedule_names:
+                    stats = probes.get(dataset_name, {})
+                    pool_size = pool_sizes.get(dataset_name, 0)
+                    size_log = float(np.log(float(pool_size) + 1.0))
+                    descriptor_rows.append(
+                        _descriptor_from_probe(stats, size_log)
+                    )
+                descriptor_matrix = np.stack(descriptor_rows, axis=0)
+                observation = _build_teacher_observation(descriptor_matrix)
+                action_np, _, _, _ = teacher_policy.act(
+                    observation,
+                    descriptor_matrix,
+                    deterministic=bool(args.teacher_deterministic),
+                )
+                mixture = action_np.get("w")
+                if mixture is None or np.sum(mixture) <= 0:
+                    mixture = np.ones(len(schedule_names), dtype=np.float32)
+                mixture = mixture.astype(np.float32)
+                mixture_sum = float(np.sum(mixture))
+                if mixture_sum <= 0:
+                    mixture = np.ones(len(schedule_names), dtype=np.float32)
+                    mixture_sum = float(len(schedule_names))
+                mixture = mixture / mixture_sum
+                eta_array = action_np.get("eta")
+                usage_array = action_np.get("u")
+                eta_scale = (
+                    float(eta_array[0])
+                    if eta_array is not None and len(eta_array) > 0
+                    else float(np.mean(eta_bounds))
+                )
+                usage_raw = (
+                    float(usage_array[0])
+                    if usage_array is not None and len(usage_array) > 0
+                    else float(np.clip((args.min_usage + args.max_usage) * 0.5, 0.0, 1.0))
+                )
+                usage = float(np.clip(usage_raw, args.min_usage, args.max_usage))
+                usage = float(np.clip(usage, 0.0, 1.0))
+                weights_schedule = {
+                    name: float(mixture[i]) for i, name in enumerate(schedule_names)
+                }
+            elif method == "maestro":
                 if policy is None:
                     raise RuntimeError("Maestro policy is not initialised")
                 weights_schedule, eta_scale, usage = policy.get_action(
@@ -507,6 +646,8 @@ def main() -> None:
                 total_images=num_images,
                 label_space_mode=args.label_space,
                 rng_seed=segment,
+                precomputed_pools=precomputed_pools,
+                precomputed_canonical=precomputed_canonical,
             )
 
             # build a small balanced val split for the mix (2% of train; >=25 per source if possible)

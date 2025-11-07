@@ -56,6 +56,39 @@ python train_maestro_yolo.py --output-root outputs --date-tag $(date +%Y%m%d)
 All scripts support the `--dry-run` flag to verify configuration loading without
 starting heavy computation.
 
+## Teacher-driven YOLO curricula
+
+Train a reusable PPO teacher on the synthetic suite:
+
+```bash
+python train_maestro_teacher.py --config configs/meta_train/small_cpu_debug.yaml
+```
+
+Drive the YOLO curriculum with that checkpoint (dry run shown for smoke testing):
+
+```bash
+python train_maestro_yolo.py \
+  --teacher-ckpt outputs/debug_run/policy.pt \
+  --method maestro --teacher-deterministic \
+  --output-root outputs --date-tag $(date +%Y%m%d) \
+  --segments 2 --budget-images 2048 --batch 4 --dry-run
+```
+
+For publication-scale experiments substitute the configuration and schedule size:
+
+```bash
+python train_maestro_teacher.py --config configs/publication/main_suite.yaml
+python train_maestro_yolo.py \
+  --teacher-ckpt outputs/publication_main/policy.pt \
+  --method maestro --teacher-deterministic \
+  --output-root outputs --date-tag $(date +%Y%m%d) \
+  --segments 12 --budget-images 200000 --batch 16 --imgsz 896
+```
+
+The helper script `python scripts/verify_teacher_pipeline.py` runs the debug
+meta-training configuration, executes a dry-run YOLO track controlled by the
+saved teacher, and validates the CSV outputs for end-to-end sanity checking.
+
 ## Repository layout
 
 The high-level directory structure matches the detailed specification in the

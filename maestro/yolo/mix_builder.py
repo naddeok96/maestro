@@ -7,7 +7,7 @@ import random
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .label_space import canonical_from_lists, dump_canonical, id_map
 from .yolo_txt import rewrite_label
@@ -81,6 +81,23 @@ def _collect_image_pairs(source: SourceDS, mapping: Dict[int, int]) -> List[Tupl
     return pairs
 
 
+def compute_pools_and_canonical(
+    sources: List[SourceDS],
+    donor_big_names: Optional[List[List[str]]] = None,
+    *,
+    label_space_mode: str = "overlap_only",
+) -> Tuple[Dict[str, List[Tuple[Path, Path]]], List[str]]:
+    """Pre-compute descriptor pools and canonical labels for ``sources``."""
+
+    small_lists = [list(s.names) for s in sources]
+    canonical = canonical_from_lists(small_lists, donor_big_names, mode=label_space_mode)
+    pools: Dict[str, List[Tuple[Path, Path]]] = {}
+    for source in sources:
+        mapping = id_map(source.names, canonical)
+        pools[source.name] = _collect_image_pairs(source, mapping)
+    return pools, canonical
+
+
 def build_mixed_segment(
     out_dir: Path,
     segment: int,
@@ -90,6 +107,9 @@ def build_mixed_segment(
     total_images: int,
     label_space_mode: str = "overlap_only",
     rng_seed: int = 0,
+    *,
+    precomputed_pools: Optional[Dict[str, List[Tuple[Path, Path]]]] = None,
+    precomputed_canonical: Optional[List[str]] = None,
 ) -> Tuple[Path, List[str]]:
     """Create a YOLO dataset that mixes ``sources`` proportionally to ``weights``."""
 
@@ -98,14 +118,15 @@ def build_mixed_segment(
     (mix_dir / "images" / "train").mkdir(parents=True, exist_ok=True)
     (mix_dir / "labels" / "train").mkdir(parents=True, exist_ok=True)
 
-    small_lists = [list(s.names) for s in sources]
-    canonical = canonical_from_lists(small_lists, donor_big_names, mode=label_space_mode)
-    dump_canonical(mix_dir / "canonical_names.json", canonical)
+    if precomputed_pools is None or precomputed_canonical is None:
+        pools, canonical = compute_pools_and_canonical(
+            sources, donor_big_names, label_space_mode=label_space_mode
+        )
+    else:
+        pools = precomputed_pools
+        canonical = list(precomputed_canonical)
 
-    pools: Dict[str, List[Tuple[Path, Path]]] = {}
-    for source in sources:
-        mapping = id_map(source.names, canonical)
-        pools[source.name] = _collect_image_pairs(source, mapping)
+    dump_canonical(mix_dir / "canonical_names.json", canonical)
 
     counts = _proportional_counts(weights, total_images)
     chosen: List[Tuple[str, Path, Path]] = []
