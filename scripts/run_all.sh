@@ -41,9 +41,40 @@ else
   echo "[run_all] Dry run – skipping dataset downloads"
 fi
 
+# --- Train PPO teacher on synthetic episodes (fast config for pipeline) ---
+# Allow overrides via env; fall back to debug config for quick pipeline.
+: "${TEACHER_CONFIG:=configs/meta_train/small_cpu_debug.yaml}"
+: "${TEACHER_SEED:=0}"
+: "${TEACHER_DETERMINISTIC:=1}"   # 1=true, 0=false
+
+echo "[run_all] Training PPO teacher using: ${TEACHER_CONFIG} (seed=${TEACHER_SEED})"
+python train_maestro_teacher.py \
+  --config "${TEACHER_CONFIG}" \
+  --seed "${TEACHER_SEED}" \
+  | tee "$LOG_DIR/meta_train.log"
+
+# Resolve checkpoint location from the run id in config; for the debug config this is outputs/debug_run/policy.pt
+# If a different config sets logging.output_dir/run.id, the checkpoint is still placed under outputs/<run_id>/policy.pt
+TEACH_OUT_DIR="outputs/debug_run"
+TEACH_CKPT="${TEACH_OUT_DIR}/policy.pt"
+if [[ -f "$TEACH_CKPT" ]]; then
+  echo "[run_all] Using teacher checkpoint: $TEACH_CKPT"
+else
+  echo "[run_all] WARNING: teacher checkpoint not found at $TEACH_CKPT; YOLO will use the deterministic stub/baseline"
+fi
+
+# --- YOLO track, controlled by the pre-trained teacher when available ---
 YOLO_CMD=(python train_maestro_yolo.py --output-root outputs --date-tag "$DATE_TAG" --no-resume)
 if [[ "$DRY_RUN" == "true" ]]; then
   YOLO_CMD+=(--dry-run)
+fi
+if [[ -f "$TEACH_CKPT" ]]; then
+  YOLO_CMD+=(--method maestro --teacher-ckpt "$TEACH_CKPT")
+  if [[ "$TEACHER_DETERMINISTIC" == "1" ]]; then
+    YOLO_CMD+=(--teacher-deterministic)
+  else
+    YOLO_CMD+=(--no-teacher-deterministic)
+  fi
 fi
 "${YOLO_CMD[@]}"
 
