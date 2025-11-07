@@ -1,24 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- venv bootstrap ---
-VENV_DIR="${VENV_DIR:-.venv}"
-if [[ -z "${VIRTUAL_ENV:-}" ]]; then
-  echo "[run_all] No active venv found; creating ${VENV_DIR}"
-  python3 -m venv "${VENV_DIR}"
-  # shellcheck disable=SC1090
-  source "${VENV_DIR}/bin/activate"
-  echo "[run_all] Activated venv at ${VENV_DIR}"
-else
-  echo "[run_all] Using existing venv: ${VIRTUAL_ENV}"
-fi
-
-DRY_RUN=false
-if [[ "${1:-}" == "--dry-run" ]]; then
-  DRY_RUN=true
-  shift || true
-fi
-
+# ---------------------------
+# Configurable resources
+# ---------------------------
+GPUS=(${GPUS_OVERRIDE:-0 2 4 5 6 7})   # override via env if needed
 DATE_TAG="${DATE_TAG:-$(date +%Y%m%d)}"
 OUT_ROOT="outputs/publication_${DATE_TAG}"
 RAW_DIR="$OUT_ROOT/raw_data"
@@ -26,148 +12,217 @@ FIG_DIR="$OUT_ROOT/figures"
 TAB_DIR="$OUT_ROOT/tables"
 LOG_DIR="$OUT_ROOT/logs"
 CKPT_DIR="$OUT_ROOT/checkpoints"
-
 mkdir -p "$RAW_DIR" "$FIG_DIR" "$TAB_DIR" "$LOG_DIR" "$CKPT_DIR"
 
-echo "[run_all] Outputs -> $OUT_ROOT"
+# ---------------------------
+# venv bootstrap
+# ---------------------------
+VENV_DIR="${VENV_DIR:-.venv}"
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  echo "[run_all] No active venv; creating ${VENV_DIR}"
+  python3 -m venv "${VENV_DIR}"
+  # shellcheck disable=SC1090
+  source "${VENV_DIR}/bin/activate"
+else
+  echo "[run_all] Using venv: ${VIRTUAL_ENV}"
+fi
 
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m pip install -e .
 
-if [[ "$DRY_RUN" == "false" ]]; then
-  bash scripts/download_datasets.sh ./data
-else
-  echo "[run_all] Dry run – skipping dataset downloads"
+# ---------------------------
+# Helpers
+# ---------------------------
+DRY_RUN=false
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=true
+  shift || true
 fi
 
-# --- Train PPO teacher on synthetic episodes (fast config for pipeline) ---
-# Allow overrides via env; fall back to debug config for quick pipeline.
-: "${TEACHER_CONFIG:=configs/meta_train/small_cpu_debug.yaml}"
-: "${TEACHER_SEED:=0}"
-: "${TEACHER_DETERMINISTIC:=1}"   # 1=true, 0=false
+log(){ echo -e "[run_all] $*"; }
 
-echo "[run_all] Training PPO teacher using: ${TEACHER_CONFIG} (seed=${TEACHER_SEED})"
-python train_maestro_teacher.py \
-  --config "${TEACHER_CONFIG}" \
-  --seed "${TEACHER_SEED}" \
-  | tee "$LOG_DIR/meta_train.log"
-
-# Resolve checkpoint location from the run id in config; for the debug config this is outputs/debug_run/policy.pt
-# If a different config sets logging.output_dir/run.id, the checkpoint is still placed under outputs/<run_id>/policy.pt
-TEACH_OUT_DIR="outputs/debug_run"
-TEACH_CKPT="${TEACH_OUT_DIR}/policy.pt"
-if [[ -f "$TEACH_CKPT" ]]; then
-  echo "[run_all] Using teacher checkpoint: $TEACH_CKPT"
-else
-  echo "[run_all] WARNING: teacher checkpoint not found at $TEACH_CKPT; YOLO will use the deterministic stub/baseline"
+USE_TMUX_HELPER="${USE_TMUX_HELPER:-0}"
+declare -a TMUX_SIGNALS=()
+if [[ "$USE_TMUX_HELPER" == "1" ]] && ! command -v tmux >/dev/null 2>&1; then
+  log "USE_TMUX_HELPER=1 but tmux not found; falling back to background jobs"
+  USE_TMUX_HELPER=0
 fi
 
-# --- YOLO track, controlled by the pre-trained teacher when available ---
-YOLO_CMD=(python train_maestro_yolo.py --output-root outputs --date-tag "$DATE_TAG" --no-resume)
-if [[ "$DRY_RUN" == "true" ]]; then
-  YOLO_CMD+=(--dry-run)
-fi
-if [[ -f "$TEACH_CKPT" ]]; then
-  YOLO_CMD+=(--method maestro --teacher-ckpt "$TEACH_CKPT")
-  if [[ "$TEACHER_DETERMINISTIC" == "1" ]]; then
-    YOLO_CMD+=(--teacher-deterministic)
-  else
-    YOLO_CMD+=(--no-teacher-deterministic)
+# launch <gpu_id> <cmd...>
+launch() {
+  local gpu="$1"; shift
+  local tag="${1}"; shift
+  local outfile="$LOG_DIR/${tag}.log"
+  mkdir -p "$LOG_DIR"
+  if $DRY_RUN; then
+    echo "[DRY] CUDA_VISIBLE_DEVICES=${gpu} $*" | tee "$outfile"
+    return 0
   fi
-fi
-"${YOLO_CMD[@]}"
-
-BASELINE_CONFIG="configs/meta_train/small_cpu_debug.yaml"
-if [[ -f "$BASELINE_CONFIG" ]]; then
-  METHODS=(ppo uniform easy_to_hard greedy bandit_linucb bandit_thompson pbt bohb)
-  for METHOD in "${METHODS[@]}"; do
-    CMD=(python scripts/run_comparative.py --config "$BASELINE_CONFIG" --method "$METHOD" --output-dir "$RAW_DIR/baseline_${METHOD}")
-    if [[ "$DRY_RUN" == "true" ]]; then
-      CMD+=(--seed 0)
-    fi
-    "${CMD[@]}" | tee "$LOG_DIR/baseline_${METHOD}.log"
-  done
-
-  if [[ "$DRY_RUN" == "false" ]]; then
-    PLOT_ARGS=()
-    for METHOD in "${METHODS[@]}"; do
-      if [[ -d "$RAW_DIR/baseline_${METHOD}" ]]; then
-        PLOT_ARGS+=(--run "${METHOD}=$RAW_DIR/baseline_${METHOD}")
-      fi
-    done
-    if (( ${#PLOT_ARGS[@]} > 0 )); then
-      COMP_PLOTS_DIR="$OUT_ROOT/comparative_plots/$(date +%Y%m%d-%H%M%S)"
-      python scripts/plot_comparative.py "${PLOT_ARGS[@]}" --output-dir "$COMP_PLOTS_DIR" | tee "$LOG_DIR/comparative_plots.log"
-    else
-      echo "[run_all] No comparative baselines found for plotting"
-    fi
-    latest_cp_dir="$(ls -td "$OUT_ROOT"/comparative_plots/* 2>/dev/null | head -n1 || true)"
-    if [[ -n "$latest_cp_dir" && -f "$latest_cp_dir/table4_metrics.csv" ]]; then
-      cp -f "$latest_cp_dir/table4_metrics.csv" "$RAW_DIR/baselines.csv"
-    else
-      : > "$RAW_DIR/baselines.csv"
-    fi
-    # learning curves for Fig1
-    python scripts/export_learning_curves.py --out "$RAW_DIR" \
-      --comparative-root "$RAW_DIR" || true
-
-    # markov diagnostics for Fig2
-    python scripts/run_markov_diag.py --config "$BASELINE_CONFIG" --out "$OUT_ROOT" \
-      | tee "$LOG_DIR/markov_diag.log"
-    if [[ ! -f "$RAW_DIR/baselines.csv" ]]; then
-      : > "$RAW_DIR/baselines.csv"
-    fi
+  if [[ "$USE_TMUX_HELPER" == "1" ]]; then
+    local session="runall_${tag}"
+    local signal="${session}_done"
+    local cmd_str
+    cmd_str=$(printf '%q ' "$@")
+    cmd_str="${cmd_str% }"
+    echo "[launch:tmux] gpu=${gpu} tag=${tag} session=${session} -> $outfile"
+    tmux new-session -d -s "$session" "set -euo pipefail; export CUDA_VISIBLE_DEVICES='${gpu}'; { ${cmd_str} >>'${outfile}' 2>&1; } || true; tmux wait-for -S '${signal}'"
+    TMUX_SIGNALS+=("$signal")
   else
-    : > "$RAW_DIR/baselines.csv"
+    echo "[launch] gpu=${gpu} tag=${tag} -> $outfile"
+    ( export CUDA_VISIBLE_DEVICES="${gpu}"; "$@" 2>&1 | tee "$outfile" ) &
+  fi
+}
+
+# round-robin GPU picker
+_next_gpu_i=0
+pick_gpu() {
+  local idx=${_next_gpu_i}
+  _next_gpu_i=$(( (_next_gpu_i + 1) % ${#GPUS[@]} ))
+  echo "${GPUS[$idx]}"
+}
+
+# ensure single dataset download
+DATA_SENTINEL="$OUT_ROOT/.datasets_ready"
+if ! $DRY_RUN; then
+  if [[ ! -f "$DATA_SENTINEL" ]]; then
+    log "Downloading/Preparing datasets (one-time)"
+    bash scripts/download_datasets.sh ./data | tee "$LOG_DIR/datasets.log"
+    touch "$DATA_SENTINEL"
+  else
+    log "Datasets already prepared"
   fi
 else
-  echo "[run_all] Baseline config $BASELINE_CONFIG not found; skipping"
+  log "Dry run — skipping dataset download"
 fi
 
-if [[ "$DRY_RUN" == "false" ]]; then
-  python scripts/run_ablation_suite.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/ablation.log"
-  cp -f "$RAW_DIR/ablation_results.csv" "$RAW_DIR/ablation.csv" 2>/dev/null || true
-  cp -f "$RAW_DIR/ablation_results.csv" "$RAW_DIR/ablations.csv" 2>/dev/null || true
-  python scripts/generate_ood_grid.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/ood_grid.log"
-  python scripts/run_n_invariance.py --config "$BASELINE_CONFIG" --output-dir "$RAW_DIR" | tee "$LOG_DIR/n_invariance.log"
-  if [[ -f "$RAW_DIR/n_invariance.json" ]]; then
-    RAW_DIR_ENV="$RAW_DIR" python - <<'PY'
-import csv
-import json
-import os
-from pathlib import Path
+# ---------------------------
+# 1) Train PPO Teacher (publication suite, CPU by default)
+# ---------------------------
+TEACHER_CONFIG="${TEACHER_CONFIG:-configs/publication/main_suite.yaml}"
+TEACHER_SEED="${TEACHER_SEED:-42}"        # change externally for more seeds
+TEACHER_DETERMINISTIC="${TEACHER_DETERMINISTIC:-1}"
 
-root = Path(os.environ["RAW_DIR_ENV"])
-json_path = root / "n_invariance.json"
-data = json.loads(json_path.read_text())
-csv_path = root / "n_invariance.csv"
-with csv_path.open("w", newline="", encoding="utf-8") as handle:
-    writer = csv.DictWriter(handle, fieldnames=list(data.keys()))
-    writer.writeheader()
-    writer.writerow(data)
+log "Training PPO teacher: ${TEACHER_CONFIG} (seed=${TEACHER_SEED})"
+if $DRY_RUN; then
+  echo "[DRY] python train_maestro_teacher.py --config ${TEACHER_CONFIG} --seed ${TEACHER_SEED} --output-dir outputs" | tee "$LOG_DIR/meta_train.log"
+else
+  python train_maestro_teacher.py \
+    --config "${TEACHER_CONFIG}" \
+    --seed "${TEACHER_SEED}" \
+    --output-dir outputs | tee "$LOG_DIR/meta_train.log"
+fi
+
+TEACH_RUN_ID="$(python - <<'PY'
+import yaml
+conf=yaml.safe_load(open("configs/publication/main_suite.yaml"))
+rid=conf.get("run",{}).get("id","publication_main")
+print(rid)
 PY
-  fi
+)"
+TEACH_OUT_DIR="outputs/${TEACH_RUN_ID}"
+TEACH_CKPT="${TEACH_OUT_DIR}/policy.pt"
+
+if [[ ! -f "$TEACH_CKPT" ]]; then
+  echo "[ERROR] Teacher checkpoint not found at $TEACH_CKPT" >&2
+  exit 2
+fi
+log "Teacher checkpoint: $TEACH_CKPT"
+
+# ---------------------------
+# 2) Parallel phase (after teacher)
+# ---------------------------
+# We now kick off everything that does NOT depend on each other, in parallel.
+# Rules:
+#  - Each job gets an isolated GPU via CUDA_VISIBLE_DEVICES + '--device 0' for Ultralytics.
+#  - Each job writes to a unique subdir/file (use tags).
+#  - YOLO gets priority on more GPUs; diagnostics can take leftovers or CPU.
+
+# ----- 2a) YOLO transfer track(s)
+# One definitive YOLO “publication” run (adjust segments/budget/batch as needed)
+YOLO_TAG="yolo_pub"
+YOLO_GPU="$(pick_gpu)"
+YOLO_ARGS=(python train_maestro_yolo.py
+  --output-root outputs
+  --date-tag "$DATE_TAG"
+  --no-resume
+  --segments 12
+  --budget-images 200000
+  --batch 16
+  --imgsz 896
+  --device 0
+  --method maestro
+  --teacher-ckpt "$TEACH_CKPT"
+)
+if [[ "$TEACHER_DETERMINISTIC" == "1" ]]; then YOLO_ARGS+=(--teacher-deterministic); else YOLO_ARGS+=(--no-teacher-deterministic); fi
+launch "$YOLO_GPU" "$YOLO_TAG" "${YOLO_ARGS[@]}"
+
+# (Optional) Extra YOLO seeds or mixes (uncomment to run more in parallel)
+# for S in 43 44; do
+#   gpu="$(pick_gpu)"
+#   tag="yolo_pub_seed${S}"
+#   launch "$gpu" "$tag" "${YOLO_ARGS[@]}"
+# done
+
+# ----- 2b) Diagnostics & evals (parallel)
+# Markov diagnostics (publication config)
+MD_GPU="$(pick_gpu)"
+launch "$MD_GPU" "markov_diag" \
+  python scripts/run_markov_diag.py --config "$TEACHER_CONFIG" --out "$OUT_ROOT"
+
+# N-invariance (use small config to remain quick—or swap to publication if desired)
+NI_GPU="$(pick_gpu)"
+launch "$NI_GPU" "n_invariance" \
+  python scripts/run_n_invariance.py --config configs/meta_train/small_cpu_debug.yaml --output-dir "$RAW_DIR"
+
+# OOD grid (quick version; adjust flags for heavier sweep)
+OOD_GPU="$(pick_gpu)"
+launch "$OOD_GPU" "ood_grid" \
+  python scripts/generate_ood_grid.py --config configs/meta_train/small_cpu_debug.yaml --output-dir "$RAW_DIR"
+
+# LOFO & main evals (CSV) — these are light and can run on CPU; still put on a GPU slot for consistency
+EVAL_GPU="$(pick_gpu)"
+launch "$EVAL_GPU" "eval_lofo" \
+  python scripts/run_eval.py --config configs/meta_train/lofo_classification.yaml --steps 10 --csv-out "$RAW_DIR/lofo.csv"
+
+EVAL2_GPU="$(pick_gpu)"
+launch "$EVAL2_GPU" "eval_main" \
+  python scripts/run_eval.py --config "$TEACHER_CONFIG" --steps 10 --csv-out "$RAW_DIR/main_results.csv"
+
+# ----- 2c) (Optional) Comparative baselines at scale (expensive). Uncomment to run.
+# for M in ppo uniform easy_to_hard greedy bandit_linucb bandit_thompson pbt bohb; do
+#   gpu="$(pick_gpu)"
+#   tag="baseline_${M}"
+#   launch "$gpu" "$tag" \
+#     python scripts/run_comparative.py --config "$TEACHER_CONFIG" --method "$M" --output-dir "$RAW_DIR/baseline_${M}"
+# done
+# After baselines finish you can consolidate curves:
+# python scripts/export_learning_curves.py --out "$RAW_DIR" --comparative-root "$RAW_DIR" || true
+
+# ---------------------------
+# 3) Wait for all background jobs
+# ---------------------------
+if [[ "$USE_TMUX_HELPER" == "1" ]]; then
+  log "Waiting for tmux-managed jobs to complete…"
+  for signal in "${TMUX_SIGNALS[@]}"; do
+    tmux wait-for "$signal"
+  done
+  log "All tmux-managed jobs signaled completion."
 else
-  : > "$RAW_DIR/ablation.csv"
-  : > "$RAW_DIR/ablations.csv"
-  python scripts/run_ablation.py --config "$BASELINE_CONFIG" --dry-run | tee "$LOG_DIR/ablation.log"
-  echo "[run_all] Dry run – skipping OOD grid and N-invariance sweeps" | tee "$LOG_DIR/ood_grid.log"
-  echo "[run_all] Dry run – skipping N-invariance computation" | tee "$LOG_DIR/n_invariance.log"
+  log "Waiting for parallel jobs to complete…"
+  wait
+  log "All parallel jobs complete."
 fi
 
-if [[ -f "$BASELINE_CONFIG" ]]; then
-  python scripts/run_eval.py --config configs/meta_train/lofo_classification.yaml --steps 10 --csv-out "$RAW_DIR/lofo.csv" | tee "$LOG_DIR/lofo_eval.log"
-  python scripts/run_eval.py --config "$BASELINE_CONFIG" --steps 10 --csv-out "$RAW_DIR/main_results.csv" | tee "$LOG_DIR/main_eval.log"
-fi
-
+# ---------------------------
+# 4) Figures & tables (post-processing)
+# ---------------------------
 FIG_CMD=(python scripts/make_publication_figures.py --out "$OUT_ROOT")
-TAB_CMD=(python scripts/generate_tables.py --out "$OUT_ROOT")
-if [[ "$DRY_RUN" == "true" ]]; then
-  FIG_CMD+=(--dry-run)
-  TAB_CMD+=(--dry-run)
+TAB_CMD=(python scripts/generate_tables.py        --out "$OUT_ROOT")
+if $DRY_RUN; then
+  FIG_CMD+=(--dry-run); TAB_CMD+=(--dry-run)
 fi
-"${FIG_CMD[@]}" | tee "$LOG_DIR/figures.log"
-"${TAB_CMD[@]}" | tee "$LOG_DIR/tables.log"
+"${FIG_CMD[@]}" | tee "$LOG_DIR/figures.log" || true
+"${TAB_CMD[@]}" | tee "$LOG_DIR/tables.log"  || true
 
-echo "[run_all] Pipeline complete"
+log "Publication pipeline complete."
