@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 import math
+import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,6 +74,8 @@ DEFAULT_DATASETS: Dict[str, Dict[str, object]] = {
     "target": {"yaml": "configs/datasets/target.yaml", "fallback_names": []},
 }
 
+REPO_ROOT = Path(__file__).resolve().parent
+
 
 def _resolve_yaml_path(rel_yaml: str) -> Optional[Path]:
     """Resolve dataset YAML paths in common MAESTRO locations."""
@@ -95,6 +98,21 @@ def _pretty_path(path: Path | str) -> str:
     if isinstance(path, Path):
         return str(path.resolve())
     return str(path)
+
+
+def _ensure_ultralytics_model_override(model: object, fallback_weight: str) -> None:
+    """Restore the Ultralytics override entry removed by recent releases."""
+
+    overrides = getattr(model, "overrides", None)
+    if not isinstance(overrides, dict):
+        return
+    if overrides.get("model"):
+        return
+    candidate = getattr(model, "ckpt_path", None)
+    if not candidate:
+        inner = getattr(model, "model", None)
+        candidate = getattr(inner, "yaml", None) if inner is not None else None
+    overrides["model"] = candidate or fallback_weight
 
 
 @dataclass
@@ -159,6 +177,52 @@ def _resolve_dataset_names(datasets: Iterable[str]) -> Dict[str, Dict[str, objec
     return resolved
 
 
+def _prefer_dataset_yaml(dataset: str, base_yaml: Path) -> Path:
+    """Prefer a dataset-specific YAML with explicit class names when available."""
+
+    suffix = f"yolo_{dataset}.yaml"
+    env_roots = [
+        Path(os.environ[key])
+        for key in ("MAESTRO_DATA_ROOT", "DATA_ROOT")
+        if os.environ.get(key)
+    ]
+    search_roots = [
+        base_yaml.parent,
+        base_yaml.parent / "data",
+        REPO_ROOT / "data",
+        Path.cwd() / "data",
+    ]
+    search_roots.extend(env_roots)
+    search_roots.extend(root / "data" for root in env_roots)
+
+    seen: set[Path] = set()
+    candidates: list[Path] = []
+    for root in search_roots:
+        candidate = (root / dataset / suffix) if root else Path(dataset) / suffix
+        try:
+            resolved = candidate.resolve(strict=True)
+        except FileNotFoundError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        candidates.append(resolved)
+
+    for candidate in candidates:
+        try:
+            data = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        names = data.get("names")
+        if isinstance(names, dict) and names:
+            return candidate
+        if isinstance(names, list) and names:
+            return candidate
+    return base_yaml
+
+
 def _load_names_from_yaml(yaml_path: Path, fallback: Sequence[str]) -> List[str]:
     if yaml_path.exists():
         try:
@@ -187,35 +251,124 @@ def _resolve_train_dirs(yaml_path: Path) -> Tuple[Optional[Path], Optional[Path]
     if not isinstance(data, dict):
         return None, None
 
-    base = data.get("path", "")
-    base_path = Path(base) if base else yaml_path.parent
-    if not base_path.is_absolute():
-        base_path = (yaml_path.parent / base_path).resolve()
-    else:
-        base_path = base_path.resolve()
+    base_entry = data.get("path")
+    base_candidates: list[Path] = []
+    seen_bases: set[Path] = set()
 
-    train_entry = data.get("train", "images/train")
-    train_path = Path(train_entry)
-    if not train_path.is_absolute():
-        train_path = (base_path / train_path).resolve()
-    else:
-        train_path = train_path.resolve()
+    def _push_base(path: Path) -> None:
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        if resolved in seen_bases:
+            return
+        seen_bases.add(resolved)
+        base_candidates.append(resolved)
 
-    if not train_path.exists() or not train_path.is_dir():
+    default_roots = [
+        yaml_path.parent,
+        yaml_path.parent.parent,
+        REPO_ROOT,
+        REPO_ROOT / "data",
+        Path.cwd(),
+        Path.cwd() / "data",
+    ]
+    for key in ("MAESTRO_DATA_ROOT", "DATA_ROOT"):
+        env = os.environ.get(key)
+        if not env:
+            continue
+        env_path = Path(env)
+        default_roots.extend([env_path, env_path / "data"])
+
+    if base_entry:
+        raw = Path(str(base_entry))
+        if raw.is_absolute():
+            _push_base(raw)
+        else:
+            base_str = str(raw)
+            variants = [raw]
+            stripped = base_str.removeprefix("./")
+            if stripped != base_str:
+                variants.append(Path(stripped))
+            if not base_str.startswith("data/"):
+                variants.append(Path("data") / raw)
+            for root in default_roots:
+                for variant in variants:
+                    _push_base(root / variant)
+    else:
+        for root in default_roots:
+            _push_base(root)
+
+    base_path: Optional[Path] = None
+    for candidate in base_candidates:
+        if candidate.exists() and candidate.is_dir():
+            base_path = candidate
+            break
+    if base_path is None:
         return None, None
 
+    train_entry = Path(str(data.get("train", "images/train")))
+    train_candidates: list[Path] = []
+    if train_entry.is_absolute():
+        train_candidates.append(train_entry)
+    else:
+        train_candidates.append(base_path / train_entry)
+        if not train_entry.parts or train_entry.parts[0] != "images":
+            train_candidates.append(base_path / "images" / train_entry)
+
+    train_path: Optional[Path] = None
+    for candidate in train_candidates:
+        try:
+            resolved = candidate.resolve()
+        except FileNotFoundError:
+            resolved = candidate.resolve(strict=False)
+        if resolved.exists() and resolved.is_dir():
+            train_path = resolved
+            break
+    if train_path is None:
+        return None, None
+
+    labels_dir = _infer_labels_dir(train_path, base_path)
+    return train_path, labels_dir
+
+
+def _infer_labels_dir(train_path: Path, base_path: Path) -> Optional[Path]:
+    candidates: list[Path] = []
     try:
         rel = train_path.relative_to(base_path)
     except ValueError:
-        rel = Path()
+        rel = None
+    if rel is not None:
+        parts = rel.parts
+        if parts and parts[0] == "images":
+            suffix = Path(*parts[1:]) if len(parts) > 1 else Path()
+            candidates.append(base_path / "labels" / suffix)
+        elif parts:
+            candidates.append(base_path / "labels" / Path(*parts))
+        candidates.append(base_path / "labels")
 
-    if rel.parts and rel.parts[0] == "images":
-        labels_rel = Path("labels", *rel.parts[1:])
-        labels_dir = (base_path / labels_rel).resolve()
-    else:
-        labels_dir = train_path.parent / "labels"
+    parent = train_path.parent
+    grandparent = parent.parent
+    candidates.append(grandparent / "labels" / train_path.name)
+    candidates.append(grandparent / "labels" / parent.name)
+    candidates.append(grandparent / "labels")
+    candidates.append(base_path / "labels" / train_path.name)
+    candidates.append(base_path / "labels" / parent.name)
+    candidates.append(base_path / "labels")
+    candidates.append(parent / "labels")
 
-    return train_path, labels_dir
+    seen: set[Path] = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=False)
+        except Exception:
+            resolved = candidate
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if resolved.exists() and resolved.is_dir():
+            return resolved
+    return None
 
 
 def _load_resume_checkpoint(run_dir: Path) -> Tuple[int, Path | None]:
@@ -288,6 +441,7 @@ def main() -> None:
             alt_path = _resolve_yaml_path(yaml_candidate)
             if alt_path is not None:
                 yaml_path = alt_path
+        yaml_path = _prefer_dataset_yaml(name, yaml_path)
         fallback_raw = cfg.get("fallback_names", [])
         fallback_seq: Sequence[str]
         if isinstance(fallback_raw, Sequence) and not isinstance(fallback_raw, (str, bytes)):
@@ -326,6 +480,7 @@ def main() -> None:
                 alt_path = _resolve_yaml_path(donor_yaml_candidate)
                 if alt_path is not None:
                     donor_yaml = alt_path
+            donor_yaml = _prefer_dataset_yaml(donor, donor_yaml)
             fallback = cfg.get("fallback_names", [])
             donor_names = (
                 _load_names_from_yaml(donor_yaml, fallback)
@@ -353,6 +508,7 @@ def main() -> None:
                 alt_path = _resolve_yaml_path(donor_yaml_candidate)
                 if alt_path is not None:
                     donor_yaml = alt_path
+            donor_yaml = _prefer_dataset_yaml(donor, donor_yaml)
             fallback_raw = cfg.get("fallback_names", [])
             if isinstance(fallback_raw, Sequence) and not isinstance(fallback_raw, (str, bytes)):
                 fallback_seq = [str(item) for item in fallback_raw]
@@ -529,6 +685,7 @@ def main() -> None:
                 f"[segment {segment}] weights={weights_schedule} eta_scale={eta_scale:.3f} usage={usage:.3f} images={actual_images} lr={lr_segment:.5f}"
             )
 
+            _ensure_ultralytics_model_override(model, args.weights)
             model.train(
                 data=str(mix_dir / "yolo_mix.yaml"),
                 imgsz=args.imgsz,
@@ -537,7 +694,7 @@ def main() -> None:
                 device=args.device,
                 workers=0,
                 lr0=lr_segment,
-                resume=True,
+                resume=False,  # Ultralytics resume expects a full checkpoint; we handle segment restarts ourselves.
                 project=str(run_dir),
                 name="exp",
                 save=False,
@@ -648,4 +805,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

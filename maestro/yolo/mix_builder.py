@@ -130,9 +130,15 @@ def build_mixed_segment(
         dst_img.parent.mkdir(parents=True, exist_ok=True)
         dst_lbl.parent.mkdir(parents=True, exist_ok=True)
         try:
+            if dst_img.exists() or dst_img.is_symlink():
+                dst_img.unlink()
             dst_img.symlink_to(image_path.resolve())
         except Exception:
+            if dst_img.exists():
+                dst_img.unlink()
             shutil.copy2(image_path, dst_img)
+        if dst_lbl.exists():
+            dst_lbl.unlink()
         remapped = rewrite_label(label_path, dst_lbl, overrides[dataset_name])
         if not remapped:
             dst_img.unlink(missing_ok=True)
@@ -144,9 +150,9 @@ def build_mixed_segment(
     (mix_dir / "train.txt").write_text("\n".join(manifest), encoding="utf-8")
 
     yaml_lines = [
-        f"path: {mix_dir.as_posix()}",
-        f"train: {(mix_dir / 'train.txt').as_posix()}",
-        f"val: {(mix_dir / 'train.txt').as_posix()}  # reuse train for validation",
+        f"path: {mix_dir.resolve().as_posix()}",
+        f"train: {(mix_dir / 'train.txt').resolve().as_posix()}",
+        f"val: {(mix_dir / 'train.txt').resolve().as_posix()}  # reuse train for validation",
         "names:",
     ]
     yaml_lines.extend(f"  {idx}: {name}" for idx, name in enumerate(canonical))
@@ -226,6 +232,7 @@ def build_mixed_val(
 
     val_txt = mix_dir / "val.txt"
     val_txt.write_text("\n".join(val_paths), encoding="utf-8")
+    val_txt_resolved = val_txt.resolve()
 
     yml = mix_dir / "yolo_mix.yaml"
     if yml.exists():
@@ -233,9 +240,9 @@ def build_mixed_val(
         new_lines = []
         for line in lines:
             if line.strip().startswith("val:"):
-                new_lines.append(f"val: {val_txt.as_posix()}")
+                new_lines.append(f"val: {val_txt_resolved.as_posix()}")
             else:
                 new_lines.append(line)
         yml.write_text("\n".join(new_lines), encoding="utf-8")
 
-    return val_txt
+    return val_txt_resolved

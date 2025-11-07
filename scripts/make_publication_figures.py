@@ -188,8 +188,8 @@ def main() -> None:
             id_vars=["task"],
             value_vars=[c for c in feat_cols if c in markov_df.columns],
             var_name="feature",
-            value_name="r2",
-        )
+            value_name="_metric",
+        ).rename(columns={"_metric": "r2"})
         generated["fig2"] = [str(p) for p in fig2_markov_diagnostics(markov_long, outdir)]
         if generated["fig2"]:
             generated["fig2_caption"] = str(_write_caption(outdir, "fig2"))
@@ -290,4 +290,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
