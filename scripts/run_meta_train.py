@@ -40,16 +40,21 @@ def build_env_for_task(config: Dict[str, Any], task_cfg: str, seed: int) -> Maes
     return MaestroEnv(env_config)
 
 
-def get_output_directory(config: Dict[str, Any], args: argparse.Namespace) -> Path:
+def get_output_directory(
+    config: Dict[str, Any], output_override: Optional[Path] = None
+) -> Path:
     logging_cfg = config.get("logging", {})
-    output_dir_arg = (
-        Path(args.output_dir)
-        if args.output_dir
-        else Path(logging_cfg.get("output_dir", "outputs/run"))
-    )
     run_id = config.get("run", {}).get("id", "debug")
-    run_paths = RunPaths(output_dir_arg.parent, output_dir_arg.name)
-    return run_paths.resolve() / run_id
+    base_dir = (
+        Path(output_override)
+        if output_override is not None
+        else Path(logging_cfg.get("output_dir", "outputs"))
+    )
+    if base_dir.name == run_id:
+        run_paths = RunPaths(base_dir.parent, run_id)
+    else:
+        run_paths = RunPaths(base_dir, run_id)
+    return run_paths.resolve()
 
 
 def save_checkpoint(state: Dict[str, Any], path: Path) -> None:
@@ -62,39 +67,30 @@ def load_checkpoint(path: Path) -> Dict[str, Any]:
         return torch.load(handle, map_location="cpu")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run MAESTRO meta-training")
-    parser.add_argument(
-        "--config", type=Path, required=True, help="Path to the training config"
-    )
-    parser.add_argument("--dry-run", action="store_true", help="Print config and exit")
-    parser.add_argument("--seed", type=int, default=None, help="Override training seed")
-    parser.add_argument(
-        "--output-dir", type=Path, default=None, help="Override output directory"
-    )
-    parser.add_argument(
-        "--resume", type=Path, default=None, help="Resume from checkpoint"
-    )
-    parser.add_argument(
-        "--deterministic-eval",
-        action="store_true",
-        help="Use deterministic policy for periodic evaluations",
-    )
-    args = parser.parse_args()
+def run_meta_training(
+    config_path: Path,
+    *,
+    dry_run: bool = False,
+    seed: Optional[int] = None,
+    output_dir: Optional[Path] = None,
+    resume: Optional[Path] = None,
+    deterministic_eval: bool = False,
+) -> Path:
+    """Execute PPO meta-training and return the resolved output directory."""
 
-    config = load_config(args.config)
-    if args.dry_run:
+    config = load_config(config_path)
+    if dry_run:
         print(json.dumps({"status": "dry_run", "config": config}, indent=2))
-        return
+        return get_output_directory(config, output_dir)
 
-    seed = args.seed if args.seed is not None else config.get("seed", 0)
-    torch.manual_seed(seed)
+    run_seed = seed if seed is not None else config.get("seed", 0)
+    torch.manual_seed(run_seed)
 
-    output_dir = get_output_directory(config, args)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    logger = MetricsLogger(output_dir)
-    run_name = f"ppo_meta_train_{seed}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
-    wandb_run = init_wandb_run(run_name, config={"config": config, "seed": seed})
+    resolved_output = get_output_directory(config, output_dir)
+    resolved_output.mkdir(parents=True, exist_ok=True)
+    logger = MetricsLogger(resolved_output)
+    run_name = f"ppo_meta_train_{run_seed}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    wandb_run = init_wandb_run(run_name, config={"config": config, "seed": run_seed})
 
     ppo_cfg = PPOConfig(**config.get("ppo", {}))
     policy = TeacherPolicy(
@@ -103,13 +99,15 @@ def main() -> None:
         g_progress_dim=11,
         eta_bounds=(config["optimizer"]["eta_min"], config["optimizer"]["eta_max"]),
     )
+    if deterministic_eval:
+        policy.eval()
     ppo = PPOTeacher(policy, ppo_cfg)
 
     start_episode = 0
     best_return: Optional[float] = None
-    checkpoint_path = output_dir / "policy.pt"
-    if args.resume and args.resume.exists():
-        ckpt = load_checkpoint(args.resume)
+    checkpoint_path = resolved_output / "policy.pt"
+    if resume and resume.exists():
+        ckpt = load_checkpoint(resume)
         policy.load_state_dict(ckpt["policy"])
         ppo.optim.load_state_dict(ckpt["optim"])
         ppo.lambda_cmdp = ckpt.get("lambda_cmdp", 0.0)
@@ -126,7 +124,7 @@ def main() -> None:
     try:
         for episode in range(start_episode, total_episodes):
             task_cfg = tasks[episode % len(tasks)]
-            env_seed = seed + episode * 31
+            env_seed = run_seed + episode * 31
             env = build_env_for_task(config, task_cfg, env_seed)
             stats = ppo.train_episode(env, config["horizon"])
             env.close()
@@ -153,10 +151,42 @@ def main() -> None:
                     },
                     checkpoint_path,
                 )
-                log_checkpoint(checkpoint_path, output_dir)
+                log_checkpoint(checkpoint_path, resolved_output)
     finally:
         logger.flush_json()
         wandb_run.finish()
+
+    return resolved_output
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run MAESTRO meta-training")
+    parser.add_argument(
+        "--config", type=Path, required=True, help="Path to the training config"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Print config and exit")
+    parser.add_argument("--seed", type=int, default=None, help="Override training seed")
+    parser.add_argument(
+        "--output-dir", type=Path, default=None, help="Override output directory"
+    )
+    parser.add_argument(
+        "--resume", type=Path, default=None, help="Resume from checkpoint"
+    )
+    parser.add_argument(
+        "--deterministic-eval",
+        action="store_true",
+        help="Use deterministic policy for periodic evaluations",
+    )
+    args = parser.parse_args()
+
+    run_meta_training(
+        args.config,
+        dry_run=args.dry_run,
+        seed=args.seed,
+        output_dir=args.output_dir,
+        resume=args.resume,
+        deterministic_eval=args.deterministic_eval,
+    )
 
 
 if __name__ == "__main__":
