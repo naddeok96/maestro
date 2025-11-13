@@ -44,6 +44,7 @@ log(){ echo -e "[run_all] $*"; }
 
 USE_TMUX_HELPER="${USE_TMUX_HELPER:-0}"
 declare -a TMUX_SIGNALS=()
+declare -a BACKGROUND_PIDS=()
 if [[ "$USE_TMUX_HELPER" == "1" ]] && ! command -v tmux >/dev/null 2>&1; then
   log "USE_TMUX_HELPER=1 but tmux not found; falling back to background jobs"
   USE_TMUX_HELPER=0
@@ -71,6 +72,8 @@ launch() {
   else
     echo "[launch] gpu=${gpu} tag=${tag} -> $outfile"
     ( export CUDA_VISIBLE_DEVICES="${gpu}"; "$@" 2>&1 | tee "$outfile" ) &
+    local pid=$!
+    BACKGROUND_PIDS+=("$pid")
   fi
 }
 
@@ -85,24 +88,148 @@ pick_gpu() {
 # ensure single dataset download
 DATA_SENTINEL="$OUT_ROOT/.datasets_ready"
 if ! $DRY_RUN; then
-  if [[ ! -f "$DATA_SENTINEL" ]]; then
-    log "Downloading/Preparing datasets (one-time)"
-    bash scripts/download_datasets.sh ./data | tee "$LOG_DIR/datasets.log"
-    touch "$DATA_SENTINEL"
-  else
-    log "Datasets already prepared"
-  fi
+if [[ ! -f "$DATA_SENTINEL" ]]; then
+  log "Downloading/Preparing datasets (one-time)"
+  bash scripts/download_datasets.sh ./data | tee "$LOG_DIR/datasets.log"
+  touch "$DATA_SENTINEL"
+else
+  log "Datasets already prepared"
+fi
 else
   log "Dry run — skipping dataset download"
 fi
 
 # ---------------------------
-# 1) Train PPO Teacher (publication suite, CPU by default)
+# 0) Supervised baseline benchmarks
 # ---------------------------
+BASELINE_CONFIGS=(
+  "classification:configs/tasks/classification.yaml"
+  "ner:configs/tasks/ner.yaml"
+  "detection:configs/tasks/detection.yaml"
+)
+BASELINE_ROOT="$OUT_ROOT/baselines"
+mkdir -p "$BASELINE_ROOT"
+
+# Teacher defaults (seed used for baselines too)
 TEACHER_CONFIG="${TEACHER_CONFIG:-configs/publication/main_suite.yaml}"
 TEACHER_SEED="${TEACHER_SEED:-42}"        # change externally for more seeds
 TEACHER_DETERMINISTIC="${TEACHER_DETERMINISTIC:-1}"
 
+log "Launching supervised curriculum baselines across GPUs"
+baseline_pid_start=${#BACKGROUND_PIDS[@]}
+baseline_signal_start=${#TMUX_SIGNALS[@]}
+for entry in "${BASELINE_CONFIGS[@]}"; do
+  IFS=":" read -r baseline_name baseline_cfg <<<"$entry"
+  gpu="$(pick_gpu)"
+  tag="baseline_${baseline_name}"
+  base_out="$BASELINE_ROOT/${baseline_name}"
+  mkdir -p "$base_out"
+  cmd=(python train_baselines.py \
+    --tasks "$baseline_cfg" \
+    --output-dir "$base_out" \
+    --methods standard uniform easy_to_hard greedy linucb \
+    --seed "$TEACHER_SEED" \
+    --device cuda)
+  if $DRY_RUN; then
+    cmd+=(--dry-run)
+  fi
+  launch "$gpu" "$tag" "${cmd[@]}"
+done
+
+if [[ ${#BASELINE_CONFIGS[@]} -gt 0 ]]; then
+  if [[ "$USE_TMUX_HELPER" == "1" ]]; then
+    log "Waiting for supervised baselines to finish (tmux)..."
+    for signal in "${TMUX_SIGNALS[@]:baseline_signal_start}"; do
+      tmux wait-for "$signal"
+    done
+  else
+    log "Waiting for supervised baselines to finish..."
+    for pid in "${BACKGROUND_PIDS[@]:baseline_pid_start}"; do
+      wait "$pid"
+    done
+  fi
+  if ! $DRY_RUN; then
+    BASELINE_ROOT_ENV="$BASELINE_ROOT" python - <<'PY'
+import os
+from pathlib import Path
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+base = Path(os.environ["BASELINE_ROOT_ENV"])
+frames = []
+for sub in base.glob("*"):
+    summary = sub / "baseline_summary.csv"
+    if summary.is_file():
+        df = pd.read_csv(summary)
+        df.insert(0, "task_group", sub.name)
+        frames.append(df)
+if not frames:
+    raise SystemExit(0)
+out = pd.concat(frames, ignore_index=True)
+summary_all = base / "baseline_summary_all.csv"
+out.to_csv(summary_all, index=False)
+metric_priority = [
+    "final_macro_f1",
+    "final_macro_map",
+    "final_accuracy",
+    "final_map",
+    "final_loss",
+]
+metric_column = next((col for col in metric_priority if col in out.columns), None)
+if metric_column is None:
+    metric_column = next((col for col in out.columns if col.startswith("final_")), None)
+if metric_column:
+    pivot = out.pivot_table(index="task", columns="method", values=metric_column, aggfunc="max")
+    matrix = pivot.to_numpy(dtype=float)
+    if pivot.size and np.isfinite(matrix).any():
+        fig_dir = base / "figures"
+        fig_dir.mkdir(parents=True, exist_ok=True)
+        masked = np.ma.masked_invalid(matrix)
+        cmap = plt.cm.magma.copy()
+        cmap.set_bad(color="#f5f5f5")
+        fig, ax = plt.subplots(figsize=(1.8 * max(1, len(pivot.columns)), 1.2 * max(1, len(pivot.index)) + 1.5))
+        im = ax.imshow(masked, aspect="auto", cmap=cmap)
+        cbar = fig.colorbar(im, ax=ax)
+        metric_label = metric_column.replace("final_", "").replace("_", " ").title()
+        cbar.set_label(metric_label)
+        ax.set_xticks(range(len(pivot.columns)))
+        ax.set_xticklabels([str(col) for col in pivot.columns], rotation=45, ha="right")
+        ax.set_yticks(range(len(pivot.index)))
+        ax.set_yticklabels([str(idx) for idx in pivot.index])
+        ax.set_xlabel("Method")
+        ax.set_ylabel("Task")
+        ax.set_title(f"{metric_label} overview (all baselines)")
+        max_val = float(np.nanmax(matrix))
+        threshold = max_val * 0.5 if max_val != 0 else 0.0
+        for i, task in enumerate(pivot.index):
+            for j, method in enumerate(pivot.columns):
+                value = pivot.loc[task, method]
+                if not np.isfinite(value):
+                    continue
+                ax.text(
+                    j,
+                    i,
+                    f"{value:.3f}",
+                    ha="center",
+                    va="center",
+                    color="white" if value < threshold else "black",
+                    fontsize=9,
+                )
+        fig.tight_layout()
+        for ext in ("png", "pdf"):
+            fig.savefig(fig_dir / f"baseline_summary_overview.{ext}", dpi=200)
+        plt.close(fig)
+PY
+  fi
+fi
+
+# ---------------------------
+# 1) Train PPO Teacher (publication suite, CPU by default)
+# ---------------------------
 log "Training PPO teacher: ${TEACHER_CONFIG} (seed=${TEACHER_SEED})"
 if $DRY_RUN; then
   echo "[DRY] python train_maestro_teacher.py --config ${TEACHER_CONFIG} --seed ${TEACHER_SEED} --output-dir outputs" | tee "$LOG_DIR/meta_train.log"

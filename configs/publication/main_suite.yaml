@@ -19,6 +19,7 @@ teacher:
   dataset_head_dim: 256
   policy_hidden: [512, 512, 256, 128]
   value_hidden: [512, 512, 256, 128]
+  mixture_bias_init: 0.5
 
 probe:
   size: 512
@@ -34,18 +35,30 @@ ppo:
   minibatch_size: 2048
   rollout_length: 8192
   epochs: 15
-  entropy_coef_mix: 0.01
-  entropy_coef_u: 0.002
+  entropy_coef_mix: 0.015
+  entropy_coef_u: 0.004
   barrier_kappa: 1.0e-4
-  barrier_kappa_prime: 1.0e-4
+  barrier_kappa_prime: 2.0e-3
   value_coef: 0.5
   max_grad_norm: 1.0
+  cmdp_lambda_lr: 1.0e-4
+  cmdp_target_fraction: 0.90
+
+ppo_exploration:
+  warmup_episodes: 300
+  entropy_mix_warmup: 0.02
+  entropy_mix_final: 0.01
+  entropy_u_warmup: 0.006
+  entropy_u_final: 0.002
+  barrier_u_warmup: 0.002
+  barrier_u_final: 0.001
+  
 
 optimizer:
   weight_decay: 1.0e-5
   momentum: 0.95
   eta_min: 1.0e-6
-  eta_max: 5.0e-2
+  eta_max: 1.0e-1
 
 logging:
   output_dir: outputs/publication_$(date +%Y%m%d)

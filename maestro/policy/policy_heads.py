@@ -57,12 +57,17 @@ class PolicyHeads(nn.Module):
         mix_hidden: Sequence[int] = (128, 128),
         scalar_hidden: Sequence[int] = (64, 64),
         eta_bounds: tuple[float, float] = (1e-5, 1e-2),
+        mixture_bias_init: float | None = None,
     ) -> None:
         super().__init__()
         self.mixture_head = MixtureHead(descriptor_dim + context_dim, mix_hidden)
         self.lr_head = ScalarHead(context_dim, scalar_hidden)
         self.usage_head = ScalarHead(context_dim, scalar_hidden)
         self.eta_bounds = eta_bounds
+        if mixture_bias_init is not None:
+            last_layer = self.mixture_head.net[-1]
+            if isinstance(last_layer, nn.Linear) and last_layer.bias is not None:
+                nn.init.constant_(last_layer.bias, float(mixture_bias_init))
 
     def forward(
         self,

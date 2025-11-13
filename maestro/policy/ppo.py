@@ -115,6 +115,7 @@ class TeacherPolicy(nn.Module):
         eta_bounds: tuple[float, float],
         phi_dim: int = 64,
         rho_dim: int = 64,
+        mixture_bias_init: float | None = None,
     ) -> None:
         super().__init__()
         self.encoder = DeepSetsEncoder(
@@ -125,6 +126,7 @@ class TeacherPolicy(nn.Module):
             descriptor_dim=phi_dim,
             context_dim=context_dim,
             eta_bounds=eta_bounds,
+            mixture_bias_init=mixture_bias_init,
         )
         self.value_head = nn.Sequential(
             nn.Linear(context_dim, 256),
@@ -252,6 +254,7 @@ class TeacherPolicy(nn.Module):
         entropies_u: List[torch.Tensor] = []
         eta_preds: List[torch.Tensor] = []
         u_preds: List[torch.Tensor] = []
+        alpha_means: List[torch.Tensor] = []
 
         for obs, desc, w, eta_sample, u_sample in zip(
             batch_observations,
@@ -274,7 +277,7 @@ class TeacherPolicy(nn.Module):
                 desc_arr = desc
             _, _, _, encoded, context = self._prepare_inputs(obs_t, desc_arr)
             outputs = self.policy_heads(encoded, context)
-            dirichlet, eta_dist, usage_dist, _ = self._build_distributions(outputs)
+            dirichlet, eta_dist, usage_dist, alpha = self._build_distributions(outputs)
             lp = (
                 dirichlet.log_prob(w)
                 + eta_dist.log_prob(eta_sample)
@@ -287,6 +290,7 @@ class TeacherPolicy(nn.Module):
             entropies_u.append(usage_dist.entropy())
             eta_preds.append(self._bound_eta(outputs.lr_logit))
             u_preds.append(torch.sigmoid(outputs.usage_logit))
+            alpha_means.append(alpha.mean())
 
         return {
             "log_prob": torch.stack(log_probs),
@@ -296,6 +300,7 @@ class TeacherPolicy(nn.Module):
             "entropy_u": torch.stack(entropies_u),
             "eta_pred": torch.stack(eta_preds),
             "u_pred": torch.stack(u_preds),
+            "alpha_mean": torch.stack(alpha_means),
         }
 
     def value(
@@ -330,6 +335,12 @@ class PPOTeacher:
         total_reward = 0.0
         macro_acc = 0.0
         episode_usage = 0.0
+        ent_mix_vals: List[float] = []
+        ent_eta_vals: List[float] = []
+        ent_u_vals: List[float] = []
+        kl_vals: List[float] = []
+        clip_vals: List[float] = []
+        alpha_vals: List[float] = []
 
         for _ in range(horizon):
             action_np, log_prob, value, action_info = self.policy.act(
@@ -437,6 +448,7 @@ class PPOTeacher:
                 entropy_mix = eval_results["entropy_mix"]
                 entropy_eta = eval_results["entropy_eta"]
                 entropy_u = eval_results["entropy_u"]
+                alpha_mean_batch = eval_results["alpha_mean"]
 
                 ratio = torch.exp(logp - old_logp)
                 clipped_ratio = torch.clamp(
@@ -453,6 +465,23 @@ class PPOTeacher:
                     + self.config.entropy_coef_u
                     * (entropy_eta.mean() + entropy_u.mean())
                 )
+                ent_mix_vals.append(float(entropy_mix.mean().detach().cpu()))
+                ent_eta_vals.append(float(entropy_eta.mean().detach().cpu()))
+                ent_u_vals.append(float(entropy_u.mean().detach().cpu()))
+                alpha_vals.append(float(alpha_mean_batch.mean().detach().cpu()))
+
+                approx_kl_val = float((old_logp - logp).mean().detach().cpu())
+                clipfrac_val = float(
+                    (
+                        torch.abs(ratio - 1.0) > self.config.clip_ratio
+                    )
+                    .float()
+                    .mean()
+                    .detach()
+                    .cpu()
+                )
+                kl_vals.append(approx_kl_val)
+                clip_vals.append(clipfrac_val)
 
                 eta_vals = actions_batch["eta"]
                 u_vals = actions_batch["u"]
@@ -503,7 +532,7 @@ class PPOTeacher:
             else 0.0
         )
 
-        return {
+        stats = {
             "return": total_reward,
             "macro_accuracy": macro_acc,
             "lambda_cmdp": self.lambda_cmdp,
@@ -512,3 +541,16 @@ class PPOTeacher:
             "avg_usage": avg_usage,
             "num_steps": float(len(buffer.steps)),
         }
+        stats.update(
+            {
+                "ent_mix": float(np.mean(ent_mix_vals)) if ent_mix_vals else 0.0,
+                "ent_eta": float(np.mean(ent_eta_vals)) if ent_eta_vals else 0.0,
+                "ent_u": float(np.mean(ent_u_vals)) if ent_u_vals else 0.0,
+                "approx_kl": float(np.mean(kl_vals)) if kl_vals else 0.0,
+                "clipfrac": float(np.mean(clip_vals)) if clip_vals else 0.0,
+                "eta_std": float(self.policy.eta_log_std.exp().item()),
+                "u_std": float(self.policy.u_log_std.exp().item()),
+                "alpha_mean": float(np.mean(alpha_vals)) if alpha_vals else 0.0,
+            }
+        )
+        return stats
