@@ -1,10 +1,10 @@
+# CIFAR-10 + MNIST + Fashion-MNIST domains for classification
 task_family: classification
 datasets:
-  count: 10
-  num_classes: 20
-  feature_dim: 64
-  train_size: 8192
-  val_size: 2048
-  probe_size: 1024
-  noise: 0.15
+  count: 5
+  dataset_kinds: [cifar10, cifar100, tiny_imagenet, mnist, fashion_mnist]
+  train_size: 20000
+  val_size: 5000
+  probe_size: 5000
+  noise: 0.1
   imbalance: 0.4

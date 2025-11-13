@@ -1,10 +1,13 @@
+# CoNLL-2003-based NER publication suite
 task_family: ner
 datasets:
-  count: 8
-  vocab_size: 500
-  num_tags: 15
-  train_size: 6400
-  val_size: 1600
-  probe_size: 800
-  sequence_length: 32
-  noise: 0.12
+  count: 4
+  dataset_kinds: [conll2003]
+  train_size: 6000
+  val_size: 2000
+  probe_size: 2000
+  sequence_length: 64
+  noise: 0.1
+  entity_injection_prob: 0.15
+  focus_entities: ["B-ORG", "B-PER", "B-LOC", "B-MISC"]
+  lowercase: true

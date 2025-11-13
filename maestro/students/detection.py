@@ -16,12 +16,13 @@ from maestro.utils import OptimizerSettings, flatten_gradients
 @dataclass(eq=False)
 class DetectionStudent(nn.Module):
     image_size: int
+    num_channels: int = 3
     max_predictions: int = 2
 
     def __post_init__(self) -> None:
         super().__init__()
         self.backbone = nn.Sequential(
-            nn.Conv2d(1, 8, kernel_size=3, padding=1),
+            nn.Conv2d(self.num_channels, 8, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv2d(8, 16, kernel_size=3, padding=1),
             nn.ReLU(),

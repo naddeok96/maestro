@@ -1,9 +1,12 @@
 task_family: ner
 datasets:
   count: 2
-  vocab_size: 30
-  num_tags: 5
-  train_size: 200
-  val_size: 100
-  probe_size: 64
-  noise: 0.1
+  dataset_kinds: [conll2003]
+  train_size: 2000
+  val_size: 800
+  probe_size: 800
+  sequence_length: 48
+  noise: 0.05
+  entity_injection_prob: 0.1
+  focus_entities: ["B-ORG", "B-PER", "B-LOC"]
+  lowercase: true

@@ -30,7 +30,7 @@ def build_student(dataset_specs: List[DatasetSpec]) -> AbstractStudent:
     metadata = dataset_specs[0].metadata
     if task == "classification":
         return ClassificationStudent(
-            input_dim=int(metadata["feature_dim"]),
+            in_channels=int(metadata.get("num_channels", 1)),
             num_classes=int(metadata["num_classes"]),
         )
     if task == "ner":
@@ -39,5 +39,8 @@ def build_student(dataset_specs: List[DatasetSpec]) -> AbstractStudent:
             num_tags=int(metadata["num_tags"]),
         )
     if task == "detection":
-        return DetectionStudent(image_size=int(metadata["image_size"]))
+        return DetectionStudent(
+            image_size=int(metadata["image_size"]),
+            num_channels=int(metadata.get("num_channels", 3)),
+        )
     raise ValueError(f"Unknown task type: {task}")

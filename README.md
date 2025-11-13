@@ -3,8 +3,9 @@
 This repository contains a reference implementation of the **MAESTRO** experiments
 from the paper *Learning to Teach for Distributional Robustness*.  The codebase is
 organised so that a single reinforcement-learning "teacher" policy can be
-meta-trained on inexpensive synthetic episodes and then reused for a wide variety
-of curriculum-learning scenarios.
+meta-trained on lightweight real-data episodes (CIFAR-10, MNIST, Fashion-MNIST,
+CoNLL-2003, and VOC/COCO subsets) and then reused for a wide variety of
+curriculum-learning scenarios.
 
 The implementation focuses on three guarantees highlighted in the paper:
 
@@ -15,7 +16,7 @@ The implementation focuses on three guarantees highlighted in the paper:
 * **Number-of-datasets invariance.**  Dataset descriptors are processed through a
   DeepSets encoder with shared per-dataset policy heads, ensuring that the policy
   produces valid mixture weights for any number and any permutation of datasets.
-* **Task/architecture portability.**  Synthetic classification, NER, and
+* **Task/architecture portability.**  Realistic classification, NER, and
   detection students conform to a common API so that new students and datasets
   can be registered without touching the core environment.
 
@@ -27,27 +28,33 @@ The implementation focuses on three guarantees highlighted in the paper:
 pip install -r requirements.txt
 ```
 
-2. Run the CPU debug meta-training configuration (finishes in under a minute on
+2. Download the shared datasets (torchvision + VOC/COCO/CoNLL caches) once:
+
+```bash
+bash scripts/download_datasets.sh
+```
+
+3. Run the CPU debug meta-training configuration (finishes in under a minute on
    a laptop):
 
 ```bash
 python scripts/run_meta_train.py --config configs/meta_train/small_cpu_debug.yaml
 ```
 
-3. Evaluate the resulting teacher checkpoints and build the Markov diagnostics:
+4. Evaluate the resulting teacher checkpoints and build the Markov diagnostics:
 
 ```bash
 python scripts/run_eval.py --config configs/meta_train/lofo_classification.yaml
 python scripts/run_markov_diag.py --config configs/meta_train/small_cpu_debug.yaml
 ```
 
-4. Generate the paper figures and tables from the saved CSV/JSON artefacts:
+5. Generate the paper figures and tables from the saved CSV/JSON artefacts:
 
 ```bash
  python scripts/plot_make_figures.py --run-dir outputs/debug_run
 ```
 
-5. To reproduce the YOLO curriculum track controlled by MAESTRO:
+6. To reproduce the YOLO curriculum track controlled by MAESTRO:
 
 ```bash
 python train_maestro_yolo.py --output-root outputs --date-tag $(date +%Y%m%d)
@@ -58,7 +65,7 @@ starting heavy computation.
 
 ## Teacher-driven YOLO curricula
 
-Train a reusable PPO teacher on the synthetic suite:
+Train a reusable PPO teacher on the Tier-1 realistic suite:
 
 ```bash
 python train_maestro_teacher.py --config configs/meta_train/small_cpu_debug.yaml
@@ -97,12 +104,12 @@ paper's prompt and is reproduced below for convenience:
 ```
 maestro/
   configs/                    # Hydra-style YAML configs for tasks, training, eval
-  data/                       # Synthetic data generation notes
+  data/                       # Downloaded datasets (see scripts/download_datasets.sh)
   maestro/
     envs/                     # Gymnasium environment, probes, observation logic
     policy/                   # DeepSets encoder, PPO implementation
     students/                 # Student models implementing the common API
-    datasets/                 # Synthetic dataset factories and registry
+    datasets/                 # Real dataset factories and registry
     baselines/                # Uniform/easy-to-hard/greedy/bandit schedulers
     eval/                     # Diagnostics: Markovity, transfer, N-invariance
     utils/                    # Common helpers (seeding, EMA, logging, etc.)

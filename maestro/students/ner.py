@@ -1,4 +1,4 @@
-"""Synthetic NER student."""
+"""NER student."""
 
 from __future__ import annotations
 

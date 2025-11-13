@@ -1,9 +1,10 @@
 task_family: detection
 datasets:
   count: 2
-  image_size: 16
-  train_size: 160
-  val_size: 80
-  probe_size: 40
-  max_objects: 2
-  noise: 0.05
+  dataset_kinds: [voc, shapes]
+  image_size: 256
+  train_size: 320
+  val_size: 120
+  probe_size: 120
+  max_objects: 5
+  categories: ["person", "dog", "cat", "car", "bicycle"]

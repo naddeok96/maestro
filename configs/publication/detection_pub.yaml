@@ -1,9 +1,11 @@
+# VOC + COCO-tiny + shapes-on-background detection suite
 task_family: detection
 datasets:
-  count: 8
-  image_size: 64
-  train_size: 4096
-  val_size: 1024
-  probe_size: 512
-  max_objects: 8
-  noise: 0.1
+  count: 3
+  dataset_kinds: [voc, coco_tiny, shapes]
+  image_size: 320
+  train_size: 1500
+  val_size: 400
+  probe_size: 400
+  max_objects: 6
+  categories: ["person", "car", "bus", "truck", "bicycle", "dog", "cat", "bottle"]

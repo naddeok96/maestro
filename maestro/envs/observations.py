@@ -47,15 +47,16 @@ class ObservationBuilder:
         log_param_count = float(np.log(param_count + 1.0))
         sample_shape = None
         for spec in self.datasets:
-            if spec.task_type == "classification":
-                sample_shape = (spec.metadata["feature_dim"],)
+            meta_shape = spec.metadata.get("input_shape")
+            if meta_shape:
+                sample_shape = tuple(meta_shape)
                 break
             if spec.task_type == "ner":
                 sample_shape = (spec.metadata["sequence_length"],)
                 break
             if spec.task_type == "detection":
                 sample_shape = (
-                    1,
+                    spec.metadata.get("num_channels", 3),
                     spec.metadata["image_size"],
                     spec.metadata["image_size"],
                 )

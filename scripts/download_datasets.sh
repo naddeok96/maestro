@@ -234,6 +234,72 @@ then
   "$PYTHON_BIN" -m pip install --upgrade --no-cache-dir pillow pyyaml numpy gdown
 fi
 
+log "[*] Verifying torchvision + datasets availability"
+if ! "$PYTHON_BIN" - <<'PY'
+import sys
+try:
+    import torchvision  # noqa
+    import datasets     # noqa
+except Exception:
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+  log "[*] Installing HuggingFace datasets …"
+  "$PYTHON_BIN" -m pip install --upgrade --no-cache-dir datasets
+fi
+
+log "[*] Preparing torchvision classification datasets (MNIST/Fashion/CIFAR-10/CIFAR-100)"
+env DATA_ROOT_FOR_DL="$ROOT_DIR" PYTHONPATH="" "$PYTHON_BIN" - <<'PY'
+import os
+from pathlib import Path
+from torchvision import datasets
+
+root = Path(os.environ["DATA_ROOT_FOR_DL"])
+pairs = [
+    ("mnist", datasets.MNIST),
+    ("fashion_mnist", datasets.FashionMNIST),
+    ("cifar10", datasets.CIFAR10),
+    ("cifar100", datasets.CIFAR100),
+]
+for name, cls in pairs:
+    target = root / name
+    target.mkdir(parents=True, exist_ok=True)
+    for split in (True, False):
+        cls(root=str(target), train=split, download=True)
+print("[ok] Torchvision classification datasets cached.")
+PY
+
+log "[*] Caching CoNLL-2003 via HuggingFace datasets (NER corpus)"
+HF_CACHE_DIR="$ROOT_DIR/hf_cache"
+mkdir -p "$HF_CACHE_DIR"
+env HF_CACHE_DIR="$HF_CACHE_DIR" "$PYTHON_BIN" - <<'PY'
+import os
+from pathlib import Path
+from datasets import load_dataset
+
+cache = Path(os.environ["HF_CACHE_DIR"])
+cache.mkdir(parents=True, exist_ok=True)
+load_dataset("conll2003", cache_dir=str(cache), trust_remote_code=True)
+print(f"[ok] conll2003 cached under {cache}")
+PY
+
+log "[*] Downloading Tiny ImageNet (Tier-2 classification dataset)"
+TINY_IMAGENET_DIR="$ROOT_DIR/tiny_imagenet"
+mkdir -p "$TINY_IMAGENET_DIR"
+pushd "$TINY_IMAGENET_DIR" >/dev/null
+if [[ -f tiny-imagenet-200/wnids.txt ]]; then
+  log "[ok] Tiny ImageNet already cached"
+else
+  TINY_URL="${TINY_IMAGENET_URL:-https://tiny-imagenet-200.s3.amazonaws.com/tiny-imagenet-200.zip}"
+  fetch_file "tiny-imagenet-200.zip" "$TINY_URL"
+  extract_here "tiny-imagenet-200.zip"
+  rm -f "tiny-imagenet-200.zip"
+  [[ -f tiny-imagenet-200/wnids.txt ]] || die "Tiny ImageNet extraction failed"
+  log "[ok] Tiny ImageNet ready at $(pwd -P)/tiny-imagenet-200"
+fi
+popd >/dev/null
+
 # ----------------- Small sets (artistic via gdown, with auto-normalize) -----------------
 log "[*] Preparing artistic datasets via Google Drive (Clipart1k, Watercolor2k, Comic2k)"
 

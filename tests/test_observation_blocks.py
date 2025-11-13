@@ -9,7 +9,12 @@ from maestro.envs.maestro_env import MaestroEnv, MaestroEnvConfig
 
 
 def make_env() -> MaestroEnv:
-    datasets = build_from_config("configs/tasks/classification.yaml", seed=0)
+    try:
+        datasets = build_from_config("configs/tasks/classification.yaml", seed=0)
+    except RuntimeError as exc:
+        if "download_datasets.sh" in str(exc):
+            pytest.skip(str(exc))
+        raise
     config = MaestroEnvConfig(
         datasets=datasets,
         horizon=4,

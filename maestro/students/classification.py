@@ -1,4 +1,4 @@
-"""Simple classification student."""
+"""Image-based classification student."""
 
 from __future__ import annotations
 
@@ -14,20 +14,27 @@ from maestro.utils import OptimizerSettings, flatten_gradients
 
 @dataclass(eq=False)
 class ClassificationStudent(nn.Module):
-    input_dim: int
+    in_channels: int
     num_classes: int
 
     def __post_init__(self) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(self.input_dim, 32),
-            nn.ReLU(),
-            nn.Linear(32, 32),
-            nn.ReLU(),
-            nn.Linear(32, self.num_classes),
+        self.encoder = nn.Sequential(
+            nn.Conv2d(self.in_channels, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),
         )
+        self.head = nn.Linear(128, self.num_classes)
         self._optimizer: torch.optim.Optimizer = torch.optim.SGD(
-            self.parameters(), lr=1e-3
+            self.parameters(), lr=1e-3, momentum=0.9
         )
         self.loss_fn = nn.CrossEntropyLoss()
 
@@ -44,7 +51,9 @@ class ClassificationStudent(nn.Module):
         )
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        return self.net(inputs)
+        feats = self.encoder(inputs)
+        logits = self.head(feats.view(feats.size(0), -1))
+        return logits
 
     def step_on_minibatch(
         self, batch: Tuple[torch.Tensor, torch.Tensor]
@@ -90,6 +99,5 @@ class ClassificationStudent(nn.Module):
         inputs, _ = batch
         inputs = inputs.to(self.device)
         with torch.no_grad():
-            for layer in self.net[:-1]:
-                inputs = layer(inputs)
-        return inputs.detach()
+            feats = self.encoder(inputs)
+        return feats.view(feats.size(0), -1).detach()
